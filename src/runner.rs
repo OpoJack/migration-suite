@@ -608,7 +608,7 @@ async fn run_docker_export(
             let gz_path = tar_path.with_extension("tar.gz");
             gzip_file(&tar_path, &gz_path)?;
 
-            let txt_path = workspace.root_dir.join(&image.output_name);
+            let txt_path = docker_dir.join(&image.output_name);
             base64_encode_file(&gz_path, &txt_path)?;
             fs::remove_file(&tar_path)?;
             fs::remove_file(&gz_path)?;
