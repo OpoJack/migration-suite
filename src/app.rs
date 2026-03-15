@@ -172,7 +172,7 @@ impl App {
                 KeyCode::Char('c') | KeyCode::Char('C')
             )
         ) {
-            self.running = false;
+            self.request_quit()?;
             return Ok(());
         }
 
@@ -186,7 +186,7 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.running = false,
+            KeyCode::Char('q') | KeyCode::Esc => self.request_quit()?,
             KeyCode::Tab => self.set_active_tab(self.active_tab.next()),
             KeyCode::BackTab => self.set_active_tab(self.active_tab.previous()),
             _ => match self.active_tab {
@@ -212,6 +212,11 @@ impl App {
                 if let Some(selected) = self.git_selected.get_mut(self.git_cursor) {
                     *selected = !*selected;
                 }
+                self.sync_git_selection_state();
+            }
+            KeyCode::Char('a') => {
+                toggle_all(&mut self.git_selected);
+                self.sync_git_selection_state();
             }
             KeyCode::Left => {
                 self.git_preset_index = self.git_preset_index.saturating_sub(1);
@@ -248,6 +253,11 @@ impl App {
                 if let Some(selected) = self.helm_selected.get_mut(self.helm_cursor) {
                     *selected = !*selected;
                 }
+                self.sync_helm_selection_state();
+            }
+            KeyCode::Char('a') => {
+                toggle_all(&mut self.helm_selected);
+                self.sync_helm_selection_state();
             }
             KeyCode::Char('p') | KeyCode::Char('r') => {
                 let preview = build_helm_preview(
@@ -274,6 +284,11 @@ impl App {
                 if let Some(selected) = self.docker_selected.get_mut(self.docker_cursor) {
                     *selected = !*selected;
                 }
+                self.sync_docker_selection_state();
+            }
+            KeyCode::Char('a') => {
+                toggle_all(&mut self.docker_selected);
+                self.sync_docker_selection_state();
             }
             KeyCode::Char('p') | KeyCode::Char('r') => {
                 let preview = build_docker_preview(
@@ -932,10 +947,10 @@ impl App {
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
         let hints = match self.active_tab {
             MainTab::Git => {
-                "Tab switch  Up/Down move  Space toggle  Left/Right window  p preview  Enter run in modal  q quit"
+                "Tab switch  Up/Down move  Space toggle  a toggle all  Left/Right window  p preview  Enter run in modal  q quit"
             }
             MainTab::Helm | MainTab::Docker => {
-                "Tab switch  Up/Down move  Space toggle  p preview  Enter run in modal  q quit"
+                "Tab switch  Up/Down move  Space toggle  a toggle all  p preview  Enter run in modal  q quit"
             }
             MainTab::Jobs => "Tab switch  Up/Down move  r reload recent manifests  q quit",
             MainTab::Config => {
@@ -1002,6 +1017,14 @@ impl App {
             .unwrap_or(false)
     }
 
+    fn request_quit(&mut self) -> Result<()> {
+        if self.config_dirty {
+            self.save_config_to_disk()?;
+        }
+        self.running = false;
+        Ok(())
+    }
+
     fn set_active_tab(&mut self, tab: MainTab) {
         self.active_tab = tab;
         if matches!(self.active_tab, MainTab::Jobs) {
@@ -1050,6 +1073,74 @@ impl App {
             ConfigSection::HelmCharts => self.config.helm.charts.len(),
             ConfigSection::DockerImages => self.config.docker.images.len(),
         }
+    }
+
+    fn sync_git_selection_state(&mut self) {
+        for (repo, selected) in self
+            .config
+            .git
+            .repos
+            .iter_mut()
+            .zip(self.git_selected.iter().copied())
+        {
+            repo.enabled = selected;
+        }
+        self.config_dirty = true;
+        self.status_message = format!(
+            "Git selections updated: {} enabled",
+            self.git_selected
+                .iter()
+                .filter(|selected| **selected)
+                .count()
+        );
+    }
+
+    fn sync_helm_selection_state(&mut self) {
+        for (chart, selected) in self
+            .config
+            .helm
+            .charts
+            .iter_mut()
+            .zip(self.helm_selected.iter().copied())
+        {
+            chart.enabled = selected;
+        }
+        self.config_dirty = true;
+        self.status_message = format!(
+            "Helm selections updated: {} enabled",
+            self.helm_selected
+                .iter()
+                .filter(|selected| **selected)
+                .count()
+        );
+    }
+
+    fn sync_docker_selection_state(&mut self) {
+        for (image, selected) in self
+            .config
+            .docker
+            .images
+            .iter_mut()
+            .zip(self.docker_selected.iter().copied())
+        {
+            image.enabled = selected;
+        }
+        self.config_dirty = true;
+        self.status_message = format!(
+            "Docker selections updated: {} enabled",
+            self.docker_selected
+                .iter()
+                .filter(|selected| **selected)
+                .count()
+        );
+    }
+
+    fn save_config_to_disk(&mut self) -> Result<()> {
+        self.config.save_with_layout(&self.config_layout)?;
+        self.config_dirty = false;
+        self.recent_runs = recent_runs(&self.config).unwrap_or_default();
+        self.status_message = format!("Saved {}", self.config_path.display());
+        Ok(())
     }
 
     fn toggle_current_config_item(&mut self) {
@@ -1976,6 +2067,13 @@ fn pagination_label(start: usize, end: usize, total: usize) -> String {
     }
 }
 
+fn toggle_all(values: &mut [bool]) {
+    let should_enable_all = values.iter().any(|selected| !selected);
+    for value in values {
+        *value = should_enable_all;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1993,5 +2091,15 @@ mod tests {
         assert_eq!(pagination_label(0, 5, 25), "(1-5 of 25)");
         assert_eq!(pagination_label(20, 25, 25), "(21-25 of 25)");
         assert_eq!(pagination_label(0, 0, 0), "(0 of 0)");
+    }
+
+    #[test]
+    fn toggle_all_enables_then_disables_everything() {
+        let mut values = vec![true, false, true];
+        toggle_all(&mut values);
+        assert_eq!(values, vec![true, true, true]);
+
+        toggle_all(&mut values);
+        assert_eq!(values, vec![false, false, false]);
     }
 }
