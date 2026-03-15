@@ -37,6 +37,7 @@ pub struct App {
     recent_runs: Vec<RunManifest>,
     active_tab: MainTab,
     status_message: String,
+    status_indicator_visible: bool,
     config_dirty: bool,
     git_selected: Vec<bool>,
     helm_selected: Vec<bool>,
@@ -87,6 +88,7 @@ impl App {
             recent_runs,
             active_tab: MainTab::Git,
             status_message: "Loaded configuration".to_string(),
+            status_indicator_visible: false,
             config_dirty: false,
             git_cursor: 0,
             helm_cursor: 0,
@@ -131,7 +133,7 @@ impl App {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(10),
-                Constraint::Length(2),
+                Constraint::Length(3),
             ])
             .split(frame.area());
 
@@ -185,8 +187,8 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.running = false,
-            KeyCode::Tab => self.active_tab = self.active_tab.next(),
-            KeyCode::BackTab => self.active_tab = self.active_tab.previous(),
+            KeyCode::Tab => self.set_active_tab(self.active_tab.next()),
+            KeyCode::BackTab => self.set_active_tab(self.active_tab.previous()),
             _ => match self.active_tab {
                 MainTab::Git => self.handle_git_key(key).await?,
                 MainTab::Helm => self.handle_helm_key(key)?,
@@ -354,6 +356,7 @@ impl App {
                     return Ok(());
                 };
                 self.status_message = "Started export job".to_string();
+                self.status_indicator_visible = true;
                 self.preview_modal = None;
                 match preview.clone() {
                     PreviewData::Git(preview) => {
@@ -460,12 +463,14 @@ impl App {
             JobEvent::Started { kind, description } => {
                 self.current_job = Some(CurrentJob::new(kind, description.clone()));
                 self.status_message = description;
+                self.status_indicator_visible = true;
             }
             JobEvent::Log(message) => {
                 if let Some(current) = self.current_job.as_mut() {
                     current.logs.push(message.clone());
                 }
                 self.status_message = message;
+                self.status_indicator_visible = true;
             }
             JobEvent::Finished(manifest) => {
                 if let Some(current) = self.current_job.as_mut() {
@@ -474,6 +479,7 @@ impl App {
                 }
                 self.last_preview = None;
                 self.status_message = manifest.summary.clone();
+                self.status_indicator_visible = true;
                 self.recent_runs = recent_runs(&self.config).unwrap_or_default();
                 self.jobs_cursor = 0;
             }
@@ -483,6 +489,7 @@ impl App {
                     current.failure = Some(error.clone());
                 }
                 self.status_message = format!("Job failed: {error}");
+                self.status_indicator_visible = true;
             }
         }
     }
@@ -598,12 +605,20 @@ impl App {
             .constraints([Constraint::Min(8), Constraint::Length(9)])
             .split(area);
 
+        let visible_rows = visible_list_rows(layout[0]);
+        let (start, end) = paged_window(
+            self.helm_cursor,
+            self.config.helm.charts.len(),
+            visible_rows,
+        );
         let items = self
             .config
             .helm
             .charts
             .iter()
             .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
             .map(|(index, chart)| {
                 let cursor = if index == self.helm_cursor { ">" } else { " " };
                 let checked = if self.helm_selected.get(index).copied().unwrap_or(false) {
@@ -626,7 +641,10 @@ impl App {
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            List::new(items).block(Block::default().borders(Borders::ALL).title("Helm Charts")),
+            List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+                "Helm Charts {}",
+                pagination_label(start, end, self.config.helm.charts.len())
+            ))),
             layout[0],
         );
 
@@ -652,12 +670,20 @@ impl App {
             .constraints([Constraint::Min(8), Constraint::Length(9)])
             .split(area);
 
+        let visible_rows = visible_list_rows(layout[0]);
+        let (start, end) = paged_window(
+            self.docker_cursor,
+            self.config.docker.images.len(),
+            visible_rows,
+        );
         let items = self
             .config
             .docker
             .images
             .iter()
             .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
             .map(|(index, image)| {
                 let cursor = if index == self.docker_cursor {
                     ">"
@@ -684,11 +710,10 @@ impl App {
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            List::new(items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Docker Images"),
-            ),
+            List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+                "Docker Images {}",
+                pagination_label(start, end, self.config.docker.images.len())
+            ))),
             layout[0],
         );
 
@@ -824,10 +849,10 @@ impl App {
                 "Tab switch  Left/Right section  Up/Down move  e edit  a add  d delete  Space toggle  s save  q quit"
             }
         };
-        let footer = Paragraph::new(format!("{hints}\nStatus: {}", self.status_message))
+        let footer = Paragraph::new(format!("{}\n{hints}", self.footer_status_line()))
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title("Help"));
+            .block(Block::default().borders(Borders::ALL).title("Status"));
         frame.render_widget(footer, area);
     }
 
@@ -872,6 +897,22 @@ impl App {
             .as_ref()
             .map(|job| job.running)
             .unwrap_or(false)
+    }
+
+    fn set_active_tab(&mut self, tab: MainTab) {
+        self.active_tab = tab;
+        if matches!(self.active_tab, MainTab::Jobs) {
+            self.status_indicator_visible = false;
+        }
+    }
+
+    fn footer_status_line(&self) -> String {
+        if self.status_indicator_visible {
+            if let Some(job) = self.current_job.as_ref() {
+                return format!("Job: {}", compact_job_status(job));
+            }
+        }
+        format!("Status: {}", self.status_message)
     }
 
     fn current_config_section_len(&self) -> usize {
@@ -1472,6 +1513,23 @@ fn render_current_job(job: &CurrentJob) -> String {
         lines.push(format!("Completed: {}", manifest.summary));
     }
     lines.join("\n")
+}
+
+fn compact_job_status(job: &CurrentJob) -> String {
+    if job.running {
+        let detail = job
+            .logs
+            .last()
+            .cloned()
+            .unwrap_or_else(|| job.description.clone());
+        format!("[running] {} | {}", job.kind.as_str(), detail)
+    } else if let Some(failure) = job.failure.as_ref() {
+        format!("[failed] {} | {}", job.kind.as_str(), failure)
+    } else if let Some(manifest) = job.manifest.as_ref() {
+        format!("[complete] {} | {}", job.kind.as_str(), manifest.summary)
+    } else {
+        format!("[idle] {}", job.description)
+    }
 }
 
 fn render_git_repo_config_list(
