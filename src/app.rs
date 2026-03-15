@@ -15,8 +15,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::{
     command::{CommandRunner, SystemCommandRunner},
     config::{
-        AppConfig, DockerImageConfig, GitRepoConfig, HelmChartConfig, branches_to_csv,
-        config_path_from_cwd, csv_to_branches,
+        AppConfig, ConfigLayout, DockerImageConfig, GitRepoConfig, HelmChartConfig,
+        branches_to_csv, config_path_from_cwd, csv_to_branches,
     },
     manifest::{JobKind, RunManifest},
     runner::{
@@ -32,6 +32,7 @@ pub struct App {
     event_stream: EventStream,
     runner: Arc<dyn CommandRunner>,
     config_path: PathBuf,
+    config_layout: ConfigLayout,
     config: AppConfig,
     recent_runs: Vec<RunManifest>,
     active_tab: MainTab,
@@ -59,7 +60,7 @@ impl App {
     pub fn bootstrap() -> Result<Self> {
         let cwd = env::current_dir()?;
         let config_path = config_path_from_cwd(&cwd);
-        let config = AppConfig::load_or_default(&config_path)?;
+        let (config, config_layout) = AppConfig::load_or_default_with_layout(&config_path)?;
         let recent_runs = recent_runs(&config).unwrap_or_default();
         let (job_sender, job_receiver) = unbounded_channel();
 
@@ -68,6 +69,7 @@ impl App {
             event_stream: EventStream::default(),
             runner: Arc::new(SystemCommandRunner),
             config_path,
+            config_layout,
             git_selected: config.git.repos.iter().map(|repo| repo.enabled).collect(),
             helm_selected: config
                 .helm
@@ -325,7 +327,7 @@ impl App {
             KeyCode::Char('d') => self.delete_current_config_item()?,
             KeyCode::Char('e') => self.open_edit_form()?,
             KeyCode::Char('s') => {
-                self.config.save(&self.config_path)?;
+                self.config.save_with_layout(&self.config_layout)?;
                 self.config_dirty = false;
                 self.recent_runs = recent_runs(&self.config).unwrap_or_default();
                 self.status_message = format!("Saved {}", self.config_path.display());

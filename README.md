@@ -7,7 +7,7 @@ The app is CLI-backed in v1. It expects working `git`, `helm`, and `docker` inst
 ## Features
 
 - Tabbed TUI for `Git`, `Helm`, `Docker`, `Jobs`, and `Config`
-- Typed `migration-suite.toml` configuration with light in-app editing
+- Typed split configuration with light in-app editing
 - Preview before export for Git, Helm, and Docker jobs
 - Timestamped run directories with manifests, logs, and SHA-256 checksums
 - Git export detection based on commits or tags in a preset time window
@@ -23,6 +23,15 @@ Create `migration-suite.toml` in the project root:
 base_dir = "migration-exports"
 recent_run_limit = 10
 
+[includes]
+git = "migration-suite.git.toml"
+helm = "migration-suite.helm.toml"
+docker = "migration-suite.docker.toml"
+```
+
+Create `migration-suite.git.toml`:
+
+```toml
 [git]
 default_branches = ["develop", "release/abc", "release/xyz"]
 
@@ -38,12 +47,24 @@ path = "/Users/jack/work/user-api"
 remote = "origin"
 branches = ["develop", "release/abc"]
 enabled = true
+```
+
+Create `migration-suite.helm.toml`:
+
+```toml
+[helm]
 
 [[helm.charts]]
 name = "backend"
 reference = "oci://harbor.example.local/charts/backend"
 version = "1.2.3"
 enabled = true
+```
+
+Create `migration-suite.docker.toml`:
+
+```toml
+[docker]
 
 [[docker.images]]
 name = "user-api"
@@ -106,6 +127,7 @@ Helm runs create a combined `helm-charts_<timestamp>.tar.gz.txt` payload. Docker
 ## Notes
 
 - `git.repos[].remote` controls which remote is fetched before Git preview/export. If omitted, the app uses `origin`.
+- New installs default to split config files when you save from the TUI. Existing single-file configs still load and save correctly.
 - Git LFS export is not implemented in v1 and is called out in the Git manifest notes.
 - Docker exports run sequentially by default.
 - Recent run history is loaded from manifest files on disk; there is no separate job database in v1.
