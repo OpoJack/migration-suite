@@ -309,7 +309,7 @@ impl App {
         match key.code {
             KeyCode::Up => self.jobs_cursor = self.jobs_cursor.saturating_sub(1),
             KeyCode::Down => {
-                if self.jobs_cursor + 1 < self.recent_runs.len() {
+                if self.jobs_cursor + 1 < self.jobs_list_len() {
                     self.jobs_cursor += 1;
                 }
             }
@@ -506,6 +506,7 @@ impl App {
                 self.current_job = Some(CurrentJob::new(kind, description.clone()));
                 self.status_message = description;
                 self.status_indicator_visible = true;
+                self.jobs_cursor = 0;
             }
             JobEvent::PreviewStarted(message) => {
                 self.preview_generation_active = true;
@@ -876,32 +877,60 @@ impl App {
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
             .split(area);
 
-        let items = self
-            .recent_runs
-            .iter()
-            .enumerate()
-            .map(|(index, manifest)| {
-                let row_style = if index == self.jobs_cursor {
-                    Style::default()
-                        .fg(theme_accent())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(Line::from(vec![
-                    cursor_span(index == self.jobs_cursor),
-                    Span::raw(" "),
-                    status_badge_span(manifest_run_label(manifest.status.clone())),
-                    Span::raw(" "),
-                    Span::styled(
-                        format!("[{}]", manifest.kind.as_str()),
-                        Style::default().fg(theme_info()),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(manifest.summary.clone(), row_style),
-                ]))
-            })
-            .collect::<Vec<_>>();
+        let mut items = Vec::new();
+        let mut list_index = 0;
+
+        if let Some(job) = self.current_job.as_ref().filter(|job| job.running) {
+            let row_style = if list_index == self.jobs_cursor {
+                Style::default()
+                    .fg(theme_accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            items.push(ListItem::new(Line::from(vec![
+                cursor_span(list_index == self.jobs_cursor),
+                Span::raw(" "),
+                status_badge_span("RUN"),
+                Span::raw(" "),
+                Span::styled(
+                    format!("[{}]", job.kind.as_str()),
+                    Style::default().fg(theme_info()),
+                ),
+                Span::raw(" "),
+                Span::styled(job.description.clone(), row_style),
+            ])));
+            list_index += 1;
+        }
+
+        items.extend(
+            self.recent_runs
+                .iter()
+                .enumerate()
+                .map(|(index, manifest)| {
+                    let item_index = list_index + index;
+                    let row_style = if item_index == self.jobs_cursor {
+                        Style::default()
+                            .fg(theme_accent())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(Line::from(vec![
+                        cursor_span(item_index == self.jobs_cursor),
+                        Span::raw(" "),
+                        status_badge_span(manifest_run_label(manifest.status.clone())),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("[{}]", manifest.kind.as_str()),
+                            Style::default().fg(theme_info()),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(manifest.summary.clone(), row_style),
+                    ]))
+                }),
+        );
+
         frame.render_widget(
             List::new(items).block(
                 Block::default()
@@ -912,18 +941,7 @@ impl App {
             layout[0],
         );
 
-        let details = if self.job_is_running() {
-            self.current_job
-                .as_ref()
-                .map(render_current_job)
-                .unwrap_or_else(|| "No active or recent jobs yet.".to_string())
-        } else if let Some(manifest) = self.recent_runs.get(self.jobs_cursor) {
-            render_manifest(manifest)
-        } else if let Some(job) = self.current_job.as_ref() {
-            render_current_job(job)
-        } else {
-            "No active or recent jobs yet.".to_string()
-        };
+        let details = self.selected_job_details();
         frame.render_widget(
             Paragraph::new(details).wrap(Wrap { trim: true }).block(
                 Block::default()
@@ -1072,6 +1090,31 @@ impl App {
             .as_ref()
             .map(|job| job.running)
             .unwrap_or(false)
+    }
+
+    fn jobs_list_len(&self) -> usize {
+        self.recent_runs.len() + usize::from(self.job_is_running())
+    }
+
+    fn selected_job_details(&self) -> String {
+        if self.job_is_running() && self.jobs_cursor == 0 {
+            return self
+                .current_job
+                .as_ref()
+                .map(render_current_job)
+                .unwrap_or_else(|| "No active or recent jobs yet.".to_string());
+        }
+
+        let manifest_index = self
+            .jobs_cursor
+            .saturating_sub(usize::from(self.job_is_running()));
+        if let Some(manifest) = self.recent_runs.get(manifest_index) {
+            render_manifest(manifest)
+        } else if let Some(job) = self.current_job.as_ref() {
+            render_current_job(job)
+        } else {
+            "No active or recent jobs yet.".to_string()
+        }
     }
 
     fn request_quit(&mut self) -> Result<()> {

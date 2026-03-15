@@ -422,6 +422,8 @@ async fn run_git_export(
 
         let final_txt_path = workspace.root_dir.join(git_output_name(stamp));
         base64_encode_file(&tar_gz_path, &final_txt_path)?;
+        fs::remove_file(&tar_gz_path)?;
+        fs::remove_dir_all(&git_root)?;
         Ok(ArtifactOutput {
             label: "git_payload".to_string(),
             path: final_txt_path.clone(),
@@ -518,6 +520,8 @@ async fn run_helm_export(
 
         let final_txt_path = workspace.root_dir.join(helm_output_name(stamp));
         base64_encode_file(&tar_gz_path, &final_txt_path)?;
+        fs::remove_file(&tar_gz_path)?;
+        fs::remove_dir_all(&charts_dir)?;
         Ok(ArtifactOutput {
             label: "helm_payload".to_string(),
             path: final_txt_path.clone(),
@@ -616,6 +620,9 @@ async fn run_docker_export(
 
             let txt_path = workspace.root_dir.join(&image.output_name);
             base64_encode_file(&gz_path, &txt_path)?;
+            fs::remove_file(&tar_path)?;
+            fs::remove_file(&gz_path)?;
+            fs::remove_dir_all(&image_dir)?;
             outputs.push(ArtifactOutput {
                 label: image.name.clone(),
                 path: txt_path.clone(),
