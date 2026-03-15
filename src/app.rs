@@ -554,6 +554,8 @@ impl App {
                 }
                 self.status_message = format!("Job failed: {error}");
                 self.status_indicator_visible = true;
+                self.recent_runs = recent_runs(&self.config).unwrap_or_default();
+                self.jobs_cursor = 0;
             }
         }
     }
@@ -1899,24 +1901,48 @@ fn render_docker_preview_modal(preview: &DockerPreview) -> String {
 fn render_manifest(manifest: &RunManifest) -> String {
     let mut lines = vec![
         format!("Kind: {}", manifest.kind.as_str()),
+        format!(
+            "Status: {}",
+            match manifest.status {
+                RunStatus::Success => "success",
+                RunStatus::Failed => "failed",
+            }
+        ),
         format!("Summary: {}", manifest.summary),
         format!("Started: {}", manifest.started_at),
         format!("Finished: {}", manifest.finished_at),
         format!("Output dir: {}", manifest.output_dir.display()),
-        String::new(),
-        "Outputs:".to_string(),
     ];
-    for output in &manifest.outputs {
-        lines.push(format!(
-            "- {} => {} (sha256: {})",
-            output.label,
-            output.path.display(),
-            output.sha256
-        ));
+
+    lines.push(String::new());
+    lines.push("Outputs:".to_string());
+    if manifest.outputs.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for output in &manifest.outputs {
+            lines.push(format!(
+                "- {} => {} (sha256: {})",
+                output.label,
+                output.path.display(),
+                output.sha256
+            ));
+        }
     }
+
     if !manifest.notes.is_empty() {
         lines.push(String::new());
-        lines.push(format!("Notes: {}", manifest.notes.join(", ")));
+        lines.push("Notes:".to_string());
+        for note in &manifest.notes {
+            lines.push(format!("- {note}"));
+        }
+    }
+
+    if !manifest.logs.is_empty() {
+        lines.push(String::new());
+        lines.push("Recent logs:".to_string());
+        for entry in manifest.logs.iter().rev().take(12).rev() {
+            lines.push(format!("- {}", entry.message));
+        }
     }
     lines.join("\n")
 }

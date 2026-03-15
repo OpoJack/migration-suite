@@ -347,105 +347,125 @@ async fn run_git_export(
     let started_at = Utc::now();
     let mut log_lines = Vec::new();
     let mut items = Vec::new();
+    let result: Result<ArtifactOutput> = async {
+        for repo in &preview.included {
+            let repo_config = config
+                .git
+                .repos
+                .iter()
+                .find(|entry| entry.name == repo.name && entry.path == repo.path)
+                .ok_or_else(|| eyre!("missing git config entry for {}", repo.name))?;
+            let remote = git_remote_name(repo_config);
+            log(
+                tx,
+                &mut log_lines,
+                format!("Refreshing {} from remote {}", repo.name, remote),
+            );
+            sync_git_repo_logged(runner, repo_config, tx, &mut log_lines).await?;
+            log(
+                tx,
+                &mut log_lines,
+                format!("Preparing bundle for {}", repo.name),
+            );
+            let repo_dir = git_root.join(sanitize_filename(&repo.name));
+            fs::create_dir_all(&repo_dir)?;
+            let bundle_path = repo_dir.join("bundle");
 
-    for repo in &preview.included {
-        let repo_config = config
-            .git
-            .repos
-            .iter()
-            .find(|entry| entry.name == repo.name && entry.path == repo.path)
-            .ok_or_else(|| eyre!("missing git config entry for {}", repo.name))?;
-        let remote = git_remote_name(repo_config);
-        log(
-            tx,
-            &mut log_lines,
-            format!("Refreshing {} from remote {}", repo.name, remote),
-        );
-        sync_git_repo(runner, repo_config).await?;
-        log(
-            tx,
-            &mut log_lines,
-            format!("Preparing bundle for {}", repo.name),
-        );
-        let repo_dir = git_root.join(sanitize_filename(&repo.name));
-        fs::create_dir_all(&repo_dir)?;
-        let bundle_path = repo_dir.join("bundle");
+            let mut args = vec![
+                "bundle".to_string(),
+                "create".to_string(),
+                bundle_path.to_string_lossy().to_string(),
+            ];
 
-        let mut args = vec![
-            "bundle".to_string(),
-            "create".to_string(),
-            bundle_path.to_string_lossy().to_string(),
-        ];
-
-        for branch in &repo.changed_branches {
-            args.push(remote_branch_ref(repo_config, branch));
-            if let Some(base_commit) =
-                latest_commit_before_window(runner, &repo.path, remote, branch, preview.preset)
-                    .await?
-            {
-                args.push(format!("^{base_commit}"));
+            for branch in &repo.changed_branches {
+                args.push(remote_branch_ref(repo_config, branch));
+                if let Some(base_commit) =
+                    latest_commit_before_window(runner, &repo.path, remote, branch, preview.preset)
+                        .await?
+                {
+                    args.push(format!("^{base_commit}"));
+                }
             }
+
+            for tag in &repo.tags_in_window {
+                args.push(format!("refs/tags/{tag}"));
+            }
+
+            run_logged_checked(runner, "git", &args, Some(&repo.path), tx, &mut log_lines).await?;
+            items.push(ManifestItem {
+                name: repo.name.clone(),
+                item_type: "git_repo".to_string(),
+                source: repo.path.display().to_string(),
+                detail: format!(
+                    "remote={} branches={} tags={}",
+                    remote,
+                    repo.changed_branches.join(","),
+                    repo.tags_in_window.join(",")
+                ),
+                included: true,
+            });
+            log(
+                tx,
+                &mut log_lines,
+                format!(
+                    "{} exported with {} changed branches and {} tags",
+                    repo.name,
+                    repo.changed_branches.len(),
+                    repo.tags_in_window.len()
+                ),
+            );
         }
 
-        for tag in &repo.tags_in_window {
-            args.push(format!("refs/tags/{tag}"));
-        }
+        let payload_basename = git_output_name(stamp).trim_end_matches(".txt").to_string();
+        let tar_gz_path = workspace.root_dir.join(&payload_basename);
+        tar_gz_directory(&git_root, &tar_gz_path)?;
 
-        run_checked(runner, "git", &args, Some(&repo.path)).await?;
-        items.push(ManifestItem {
-            name: repo.name.clone(),
-            item_type: "git_repo".to_string(),
-            source: repo.path.display().to_string(),
-            detail: format!(
-                "remote={} branches={} tags={}",
-                remote,
-                repo.changed_branches.join(","),
-                repo.tags_in_window.join(",")
-            ),
-            included: true,
-        });
-        log(
-            tx,
-            &mut log_lines,
-            format!(
-                "{} exported with {} changed branches and {} tags",
-                repo.name,
-                repo.changed_branches.len(),
-                repo.tags_in_window.len()
-            ),
-        );
+        let final_txt_path = workspace.root_dir.join(git_output_name(stamp));
+        base64_encode_file(&tar_gz_path, &final_txt_path)?;
+        Ok(ArtifactOutput {
+            label: "git_payload".to_string(),
+            path: final_txt_path.clone(),
+            sha256: sha256_file(&final_txt_path)?,
+            size_bytes: file_size(&final_txt_path)?,
+        })
     }
-
-    let payload_basename = git_output_name(stamp).trim_end_matches(".txt").to_string();
-    let tar_gz_path = workspace.root_dir.join(&payload_basename);
-    tar_gz_directory(&git_root, &tar_gz_path)?;
-
-    let final_txt_path = workspace.root_dir.join(git_output_name(stamp));
-    base64_encode_file(&tar_gz_path, &final_txt_path)?;
-    let output = ArtifactOutput {
-        label: "git_payload".to_string(),
-        path: final_txt_path.clone(),
-        sha256: sha256_file(&final_txt_path)?,
-        size_bytes: file_size(&final_txt_path)?,
-    };
+    .await;
 
     let finished_at = Utc::now();
-    write_log(&workspace.log_path, &log_lines)?;
-    let manifest = RunManifest {
-        run_id: workspace.run_id,
-        kind: JobKind::Git,
-        status: RunStatus::Success,
-        started_at,
-        finished_at,
-        output_dir: workspace.root_dir.clone(),
-        summary: format!("Exported {} git repos", items.len()),
-        notes: vec!["git_lfs_export_not_implemented".to_string()],
-        outputs: vec![output],
-        items,
-        logs: logs_to_entries(&log_lines, finished_at),
-    };
-    manifest.save(&workspace.manifest_path)?;
-    Ok(manifest)
+    match result {
+        Ok(output) => {
+            write_log(&workspace.log_path, &log_lines)?;
+            let manifest = RunManifest {
+                run_id: workspace.run_id,
+                kind: JobKind::Git,
+                status: RunStatus::Success,
+                started_at,
+                finished_at,
+                output_dir: workspace.root_dir.clone(),
+                summary: format!("Exported {} git repos", items.len()),
+                notes: vec!["git_lfs_export_not_implemented".to_string()],
+                outputs: vec![output],
+                items,
+                logs: logs_to_entries(&log_lines, finished_at),
+            };
+            manifest.save(&workspace.manifest_path)?;
+            Ok(manifest)
+        }
+        Err(error) => {
+            persist_failed_run(
+                &workspace,
+                JobKind::Git,
+                started_at,
+                finished_at,
+                format!("Git export failed after {} repos", items.len()),
+                vec!["git_lfs_export_not_implemented".to_string()],
+                items,
+                &mut log_lines,
+                &error.to_string(),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 async fn run_helm_export(
@@ -466,61 +486,81 @@ async fn run_helm_export(
     let started_at = Utc::now();
     let mut log_lines = Vec::new();
     let mut items = Vec::new();
-
-    for chart in &preview.charts {
-        log(
-            tx,
-            &mut log_lines,
-            format!("Pulling chart {} {}", chart.name, chart.version),
-        );
-        let args = vec![
-            "pull".to_string(),
-            chart.reference.clone(),
-            "--version".to_string(),
-            chart.version.clone(),
-            "--destination".to_string(),
-            charts_dir.to_string_lossy().to_string(),
-        ];
-        run_checked(runner, "helm", &args, None).await?;
-        items.push(ManifestItem {
-            name: chart.name.clone(),
-            item_type: "helm_chart".to_string(),
-            source: chart.reference.clone(),
-            detail: format!("version={}", chart.version),
-            included: true,
-        });
-    }
-
-    let payload_basename = helm_output_name(stamp).trim_end_matches(".txt").to_string();
-    let tar_gz_path = workspace.root_dir.join(&payload_basename);
-    tar_gz_directory(&charts_dir, &tar_gz_path)?;
-
-    let final_txt_path = workspace.root_dir.join(helm_output_name(stamp));
-    base64_encode_file(&tar_gz_path, &final_txt_path)?;
-    let output = ArtifactOutput {
-        label: "helm_payload".to_string(),
-        path: final_txt_path.clone(),
-        sha256: sha256_file(&final_txt_path)?,
-        size_bytes: file_size(&final_txt_path)?,
-    };
-
     let finished_at = Utc::now();
-    write_log(&workspace.log_path, &log_lines)?;
-    let manifest = RunManifest {
-        run_id: workspace.run_id,
-        kind: JobKind::Helm,
-        status: RunStatus::Success,
-        started_at,
-        finished_at,
-        output_dir: workspace.root_dir.clone(),
-        summary: format!("Exported {} helm charts", items.len()),
-        notes: Vec::new(),
-        outputs: vec![output],
-        items,
-        logs: logs_to_entries(&log_lines, finished_at),
-    };
-    manifest.save(&workspace.manifest_path)?;
-    Ok(manifest)
+    let result: Result<ArtifactOutput> = async {
+        for chart in &preview.charts {
+            log(
+                tx,
+                &mut log_lines,
+                format!("Pulling chart {} {}", chart.name, chart.version),
+            );
+            let args = vec![
+                "pull".to_string(),
+                chart.reference.clone(),
+                "--version".to_string(),
+                chart.version.clone(),
+                "--destination".to_string(),
+                charts_dir.to_string_lossy().to_string(),
+            ];
+            run_logged_checked(runner, "helm", &args, None, tx, &mut log_lines).await?;
+            items.push(ManifestItem {
+                name: chart.name.clone(),
+                item_type: "helm_chart".to_string(),
+                source: chart.reference.clone(),
+                detail: format!("version={}", chart.version),
+                included: true,
+            });
+        }
+
+        let payload_basename = helm_output_name(stamp).trim_end_matches(".txt").to_string();
+        let tar_gz_path = workspace.root_dir.join(&payload_basename);
+        tar_gz_directory(&charts_dir, &tar_gz_path)?;
+
+        let final_txt_path = workspace.root_dir.join(helm_output_name(stamp));
+        base64_encode_file(&tar_gz_path, &final_txt_path)?;
+        Ok(ArtifactOutput {
+            label: "helm_payload".to_string(),
+            path: final_txt_path.clone(),
+            sha256: sha256_file(&final_txt_path)?,
+            size_bytes: file_size(&final_txt_path)?,
+        })
+    }
+    .await;
+
+    match result {
+        Ok(output) => {
+            write_log(&workspace.log_path, &log_lines)?;
+            let manifest = RunManifest {
+                run_id: workspace.run_id,
+                kind: JobKind::Helm,
+                status: RunStatus::Success,
+                started_at,
+                finished_at,
+                output_dir: workspace.root_dir.clone(),
+                summary: format!("Exported {} helm charts", items.len()),
+                notes: Vec::new(),
+                outputs: vec![output],
+                items,
+                logs: logs_to_entries(&log_lines, finished_at),
+            };
+            manifest.save(&workspace.manifest_path)?;
+            Ok(manifest)
+        }
+        Err(error) => {
+            persist_failed_run(
+                &workspace,
+                JobKind::Helm,
+                started_at,
+                finished_at,
+                format!("Helm export failed after {} charts", items.len()),
+                Vec::new(),
+                items,
+                &mut log_lines,
+                &error.to_string(),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 async fn run_docker_export(
@@ -541,75 +581,98 @@ async fn run_docker_export(
     let mut log_lines = Vec::new();
     let mut items = Vec::new();
     let mut outputs = Vec::new();
-
-    for image in &preview.images {
-        log(tx, &mut log_lines, format!("Pulling {}", image.reference));
-        run_checked(
-            runner,
-            "docker",
-            &vec!["pull".to_string(), image.reference.clone()],
-            None,
-        )
-        .await?;
-
-        let image_dir = docker_dir.join(sanitize_filename(&image.name));
-        fs::create_dir_all(&image_dir)?;
-        let tar_path = image_dir.join(format!(
-            "{}_{}.tar",
-            sanitize_filename(&image.name),
-            sanitize_filename(image.reference.split(':').nth(1).unwrap_or("latest"))
-        ));
-        let save_args = vec![
-            "save".to_string(),
-            "-o".to_string(),
-            tar_path.to_string_lossy().to_string(),
-            image.reference.clone(),
-        ];
-        log(tx, &mut log_lines, format!("Saving {}", image.reference));
-        run_checked(runner, "docker", &save_args, None).await?;
-
-        let gz_path = tar_path.with_extension("tar.gz");
-        gzip_file(&tar_path, &gz_path)?;
-
-        let txt_path = workspace.root_dir.join(&image.output_name);
-        base64_encode_file(&gz_path, &txt_path)?;
-        outputs.push(ArtifactOutput {
-            label: image.name.clone(),
-            path: txt_path.clone(),
-            sha256: sha256_file(&txt_path)?,
-            size_bytes: file_size(&txt_path)?,
-        });
-        items.push(ManifestItem {
-            name: image.name.clone(),
-            item_type: "docker_image".to_string(),
-            source: image.reference.clone(),
-            detail: format!("output={}", image.output_name),
-            included: true,
-        });
-        log(
-            tx,
-            &mut log_lines,
-            format!("Exported {}", image.output_name),
-        );
-    }
-
     let finished_at = Utc::now();
-    write_log(&workspace.log_path, &log_lines)?;
-    let manifest = RunManifest {
-        run_id: workspace.run_id,
-        kind: JobKind::Docker,
-        status: RunStatus::Success,
-        started_at,
-        finished_at,
-        output_dir: workspace.root_dir.clone(),
-        summary: format!("Exported {} docker images", items.len()),
-        notes: vec!["docker_exports_run_sequentially".to_string()],
-        outputs,
-        items,
-        logs: logs_to_entries(&log_lines, finished_at),
-    };
-    manifest.save(&workspace.manifest_path)?;
-    Ok(manifest)
+    let result: Result<()> = async {
+        for image in &preview.images {
+            log(tx, &mut log_lines, format!("Pulling {}", image.reference));
+            run_logged_checked(
+                runner,
+                "docker",
+                &vec!["pull".to_string(), image.reference.clone()],
+                None,
+                tx,
+                &mut log_lines,
+            )
+            .await?;
+
+            let image_dir = docker_dir.join(sanitize_filename(&image.name));
+            fs::create_dir_all(&image_dir)?;
+            let tar_path = image_dir.join(format!(
+                "{}_{}.tar",
+                sanitize_filename(&image.name),
+                sanitize_filename(image.reference.split(':').nth(1).unwrap_or("latest"))
+            ));
+            let save_args = vec![
+                "save".to_string(),
+                "-o".to_string(),
+                tar_path.to_string_lossy().to_string(),
+                image.reference.clone(),
+            ];
+            log(tx, &mut log_lines, format!("Saving {}", image.reference));
+            run_logged_checked(runner, "docker", &save_args, None, tx, &mut log_lines).await?;
+
+            let gz_path = tar_path.with_extension("tar.gz");
+            gzip_file(&tar_path, &gz_path)?;
+
+            let txt_path = workspace.root_dir.join(&image.output_name);
+            base64_encode_file(&gz_path, &txt_path)?;
+            outputs.push(ArtifactOutput {
+                label: image.name.clone(),
+                path: txt_path.clone(),
+                sha256: sha256_file(&txt_path)?,
+                size_bytes: file_size(&txt_path)?,
+            });
+            items.push(ManifestItem {
+                name: image.name.clone(),
+                item_type: "docker_image".to_string(),
+                source: image.reference.clone(),
+                detail: format!("output={}", image.output_name),
+                included: true,
+            });
+            log(
+                tx,
+                &mut log_lines,
+                format!("Exported {}", image.output_name),
+            );
+        }
+        Ok(())
+    }
+    .await;
+
+    match result {
+        Ok(()) => {
+            write_log(&workspace.log_path, &log_lines)?;
+            let manifest = RunManifest {
+                run_id: workspace.run_id,
+                kind: JobKind::Docker,
+                status: RunStatus::Success,
+                started_at,
+                finished_at,
+                output_dir: workspace.root_dir.clone(),
+                summary: format!("Exported {} docker images", items.len()),
+                notes: vec!["docker_exports_run_sequentially".to_string()],
+                outputs,
+                items,
+                logs: logs_to_entries(&log_lines, finished_at),
+            };
+            manifest.save(&workspace.manifest_path)?;
+            Ok(manifest)
+        }
+        Err(error) => {
+            persist_failed_run(
+                &workspace,
+                JobKind::Docker,
+                started_at,
+                finished_at,
+                format!("Docker export failed after {} images", items.len()),
+                vec!["docker_exports_run_sequentially".to_string()],
+                items,
+                &mut log_lines,
+                &error.to_string(),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 fn logs_to_entries(lines: &[String], timestamp: DateTime<Utc>) -> Vec<LogEntry> {
@@ -625,6 +688,57 @@ fn logs_to_entries(lines: &[String], timestamp: DateTime<Utc>) -> Vec<LogEntry> 
 fn log(tx: &UnboundedSender<JobEvent>, lines: &mut Vec<String>, message: String) {
     lines.push(message.clone());
     let _ = tx.send(JobEvent::Log(message));
+}
+
+async fn run_logged_checked(
+    runner: &dyn CommandRunner,
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    tx: &UnboundedSender<JobEvent>,
+    lines: &mut Vec<String>,
+) -> Result<()> {
+    log(tx, lines, format!("$ {program} {}", args.join(" ")));
+    match run_checked(runner, program, args, cwd).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            log(tx, lines, format!("Command failed: {error}"));
+            Err(error)
+        }
+    }
+}
+
+fn persist_failed_run(
+    workspace: &crate::output::RunWorkspace,
+    kind: JobKind,
+    started_at: DateTime<Utc>,
+    finished_at: DateTime<Utc>,
+    summary: String,
+    mut notes: Vec<String>,
+    items: Vec<ManifestItem>,
+    log_lines: &mut Vec<String>,
+    error_message: &str,
+) -> Result<()> {
+    if !log_lines.iter().any(|line| line == error_message) {
+        log_lines.push(format!("Failure: {error_message}"));
+    }
+    notes.push(format!("error={error_message}"));
+    write_log(&workspace.log_path, log_lines)?;
+    let manifest = RunManifest {
+        run_id: workspace.run_id.clone(),
+        kind,
+        status: RunStatus::Failed,
+        started_at,
+        finished_at,
+        output_dir: workspace.root_dir.clone(),
+        summary,
+        notes,
+        outputs: Vec::new(),
+        items,
+        logs: logs_to_entries(log_lines, finished_at),
+    };
+    manifest.save(&workspace.manifest_path)?;
+    Ok(())
 }
 
 async fn branch_has_commits_in_window(
@@ -714,6 +828,22 @@ async fn sync_git_repo(runner: &dyn CommandRunner, repo: &GitRepoConfig) -> Resu
         git_remote_name(repo).to_string(),
     ];
     run_checked(runner, "git", &args, Some(&repo.path)).await?;
+    Ok(())
+}
+
+async fn sync_git_repo_logged(
+    runner: &dyn CommandRunner,
+    repo: &GitRepoConfig,
+    tx: &UnboundedSender<JobEvent>,
+    lines: &mut Vec<String>,
+) -> Result<()> {
+    let args = vec![
+        "fetch".to_string(),
+        "--prune".to_string(),
+        "--tags".to_string(),
+        git_remote_name(repo).to_string(),
+    ];
+    run_logged_checked(runner, "git", &args, Some(&repo.path), tx, lines).await?;
     Ok(())
 }
 
