@@ -590,7 +590,7 @@ impl App {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(8),
-                Constraint::Length(9),
+                Constraint::Length(5),
             ])
             .split(area);
         let summary_layout = Layout::default()
@@ -682,18 +682,14 @@ impl App {
             layout[1],
         );
 
-        let preview_text = match self.last_preview.as_ref() {
-            Some(PreviewData::Git(preview)) => render_git_preview_summary(preview),
-            _ => "Select repositories, adjust the window, press `p` to preview, then `Enter` in the modal to run.".to_string(),
-        };
         frame.render_widget(
-            Paragraph::new(preview_text)
+            Paragraph::new(git_controls_text())
                 .wrap(Wrap { trim: true })
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(theme_info()))
-                        .title("Preview Summary"),
+                        .title("Controls"),
                 ),
             layout[2],
         );
@@ -702,7 +698,7 @@ impl App {
     fn draw_helm_tab(&self, frame: &mut Frame, area: Rect) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(9)])
+            .constraints([Constraint::Min(8), Constraint::Length(5)])
             .split(area);
 
         let visible_rows = visible_list_rows(layout[0]);
@@ -768,18 +764,14 @@ impl App {
             layout[0],
         );
 
-        let preview_text = match self.last_preview.as_ref() {
-            Some(PreviewData::Helm(preview)) => render_helm_preview_summary(preview),
-            _ => "Select charts and press `p` to preview the combined Helm payload.".to_string(),
-        };
         frame.render_widget(
-            Paragraph::new(preview_text)
+            Paragraph::new(artifact_controls_text("charts"))
                 .wrap(Wrap { trim: true })
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(theme_info()))
-                        .title("Preview Summary"),
+                        .title("Controls"),
                 ),
             layout[1],
         );
@@ -788,7 +780,7 @@ impl App {
     fn draw_docker_tab(&self, frame: &mut Frame, area: Rect) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(9)])
+            .constraints([Constraint::Min(8), Constraint::Length(5)])
             .split(area);
 
         let visible_rows = visible_list_rows(layout[0]);
@@ -854,18 +846,14 @@ impl App {
             layout[0],
         );
 
-        let preview_text = match self.last_preview.as_ref() {
-            Some(PreviewData::Docker(preview)) => render_docker_preview_summary(preview),
-            _ => "Select images and press `p` to preview each transfer artifact.".to_string(),
-        };
         frame.render_widget(
-            Paragraph::new(preview_text)
+            Paragraph::new(artifact_controls_text("images"))
                 .wrap(Wrap { trim: true })
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(theme_info()))
-                        .title("Preview Summary"),
+                        .title("Controls"),
                 ),
             layout[1],
         );
@@ -1812,63 +1800,14 @@ impl CurrentJob {
     }
 }
 
-fn render_git_preview_summary(preview: &GitPreview) -> String {
-    let mut lines = vec![
-        format!("Window: {}", preview.preset.label()),
-        format!("Repos included: {}", preview.included.len()),
-        format!("Repos skipped: {}", preview.skipped.len()),
-        String::new(),
-    ];
-    for repo in &preview.included {
-        lines.push(format!(
-            "{} -> branches [{}], tags [{}]",
-            repo.name,
-            if repo.changed_branches.is_empty() {
-                "none".to_string()
-            } else {
-                repo.changed_branches.join(", ")
-            },
-            if repo.tags_in_window.is_empty() {
-                "none".to_string()
-            } else {
-                repo.tags_in_window.join(", ")
-            }
-        ));
-    }
-    if !preview.skipped.is_empty() {
-        lines.push(String::new());
-        lines.push("Skipped:".to_string());
-        for skipped in &preview.skipped {
-            lines.push(format!("- {} ({})", skipped.name, skipped.reason));
-        }
-    }
-    lines.join("\n")
+fn git_controls_text() -> String {
+    "Press `space` to toggle the selected repo.\nPress `a` to toggle all repos.\nPress `left` and `right` to change the time window.\nPress `p` to preview, then `Enter` in the modal to run.".to_string()
 }
 
-fn render_helm_preview_summary(preview: &HelmPreview) -> String {
-    let mut lines = vec![
-        format!("Charts selected: {}", preview.charts.len()),
-        format!("Output: {}", preview.output_name),
-        String::new(),
-    ];
-    for chart in &preview.charts {
-        lines.push(format!(
-            "- {} => {} ({})",
-            chart.name, chart.reference, chart.version
-        ));
-    }
-    lines.join("\n")
-}
-
-fn render_docker_preview_summary(preview: &DockerPreview) -> String {
-    let mut lines = vec![
-        format!("Images selected: {}", preview.images.len()),
-        String::new(),
-    ];
-    for image in &preview.images {
-        lines.push(format!("- {} -> {}", image.name, image.output_name));
-    }
-    lines.join("\n")
+fn artifact_controls_text(noun: &str) -> String {
+    format!(
+        "Press `space` to toggle the selected {noun}.\nPress `a` to toggle all {noun}.\nPress `p` to preview, then `Enter` in the modal to run."
+    )
 }
 
 fn render_git_preview_modal(preview: &GitPreview) -> String {
