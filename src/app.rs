@@ -540,12 +540,16 @@ impl App {
             layout[0],
         );
 
+        let visible_rows = visible_list_rows(layout[1]);
+        let (start, end) = paged_window(self.git_cursor, self.config.git.repos.len(), visible_rows);
         let items = self
             .config
             .git
             .repos
             .iter()
             .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
             .map(|(index, repo)| {
                 let cursor = if index == self.git_cursor { ">" } else { " " };
                 let checked = if self.git_selected.get(index).copied().unwrap_or(false) {
@@ -565,11 +569,10 @@ impl App {
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            List::new(items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Git Repositories"),
-            ),
+            List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+                "Git Repositories {}",
+                pagination_label(start, end, self.config.git.repos.len())
+            ))),
             layout[1],
         );
 
@@ -1565,4 +1568,47 @@ fn centered_rect(horizontal: u16, vertical: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - horizontal) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn visible_list_rows(area: Rect) -> usize {
+    usize::from(area.height.saturating_sub(2)).max(1)
+}
+
+fn paged_window(cursor: usize, total_items: usize, visible_rows: usize) -> (usize, usize) {
+    if total_items == 0 {
+        return (0, 0);
+    }
+
+    let clamped_cursor = cursor.min(total_items.saturating_sub(1));
+    let start = clamped_cursor.saturating_sub(visible_rows.saturating_sub(1));
+    let end = (start + visible_rows).min(total_items);
+    (start, end)
+}
+
+fn pagination_label(start: usize, end: usize, total: usize) -> String {
+    if total == 0 {
+        "(0 of 0)".to_string()
+    } else {
+        format!("({}-{} of {})", start + 1, end, total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paged_window_keeps_cursor_visible() {
+        assert_eq!(paged_window(0, 25, 5), (0, 5));
+        assert_eq!(paged_window(4, 25, 5), (0, 5));
+        assert_eq!(paged_window(5, 25, 5), (1, 6));
+        assert_eq!(paged_window(24, 25, 5), (20, 25));
+    }
+
+    #[test]
+    fn pagination_label_uses_human_friendly_indices() {
+        assert_eq!(pagination_label(0, 5, 25), "(1-5 of 25)");
+        assert_eq!(pagination_label(20, 25, 25), "(21-25 of 25)");
+        assert_eq!(pagination_label(0, 0, 0), "(0 of 0)");
+    }
 }
