@@ -139,6 +139,9 @@ pub enum JobEvent {
     Log(String),
     Finished(RunManifest),
     Failed(String),
+    PreviewStarted(String),
+    PreviewReady(GitPreview),
+    PreviewFailed(String),
 }
 
 pub async fn build_git_preview(
@@ -249,6 +252,30 @@ pub async fn spawn_git_job(
             }
             Err(error) => {
                 let _ = tx.send(JobEvent::Failed(error.to_string()));
+            }
+        }
+    });
+}
+
+pub async fn spawn_git_preview_generation(
+    config: AppConfig,
+    repo_indices: Vec<usize>,
+    preset: TimeWindowPreset,
+    runner: Arc<dyn CommandRunner>,
+    tx: UnboundedSender<JobEvent>,
+) {
+    tokio::spawn(async move {
+        let _ = tx.send(JobEvent::PreviewStarted(format!(
+            "Preparing Git preview for {} repos in the {} window",
+            repo_indices.len(),
+            preset.label()
+        )));
+        match build_git_preview(&config, &repo_indices, preset, runner.as_ref()).await {
+            Ok(preview) => {
+                let _ = tx.send(JobEvent::PreviewReady(preview));
+            }
+            Err(error) => {
+                let _ = tx.send(JobEvent::PreviewFailed(error.to_string()));
             }
         }
     });

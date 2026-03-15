@@ -21,9 +21,9 @@ use crate::{
     manifest::{JobKind, RunManifest, RunStatus},
     runner::{
         DockerPreview, GitPreview, HelmPreview, JobEvent, PreviewData, TimeWindowPreset,
-        build_docker_preview, build_git_preview, build_helm_preview, recent_runs,
-        selected_docker_image_indices, selected_git_repo_indices, selected_helm_chart_indices,
-        spawn_docker_job, spawn_git_job, spawn_helm_job,
+        build_docker_preview, build_helm_preview, recent_runs, selected_docker_image_indices,
+        selected_git_repo_indices, selected_helm_chart_indices, spawn_docker_job, spawn_git_job,
+        spawn_git_preview_generation, spawn_helm_job,
     },
 };
 
@@ -51,6 +51,7 @@ pub struct App {
     git_preset_index: usize,
     preview_modal: Option<PreviewModal>,
     last_preview: Option<PreviewData>,
+    preview_generation_active: bool,
     form_modal: Option<FormModal>,
     job_sender: UnboundedSender<JobEvent>,
     job_receiver: UnboundedReceiver<JobEvent>,
@@ -99,6 +100,7 @@ impl App {
             git_preset_index: 2,
             preview_modal: None,
             last_preview: None,
+            preview_generation_active: false,
             form_modal: None,
             job_sender,
             job_receiver,
@@ -227,14 +229,10 @@ impl App {
                 }
             }
             KeyCode::Char('p') => {
-                let preview = self.generate_git_preview().await?;
-                self.last_preview = Some(PreviewData::Git(preview.clone()));
-                self.preview_modal = Some(PreviewModal::new(PreviewData::Git(preview)));
+                self.open_git_preview_confirmation()?;
             }
             KeyCode::Char('r') => {
-                let preview = self.generate_git_preview().await?;
-                self.preview_modal = Some(PreviewModal::new(PreviewData::Git(preview.clone())));
-                self.last_preview = Some(PreviewData::Git(preview));
+                self.open_git_preview_confirmation()?;
             }
             _ => {}
         }
@@ -265,7 +263,9 @@ impl App {
                     &selected_helm_chart_indices(&self.config, &self.helm_selected),
                 );
                 self.last_preview = Some(PreviewData::Helm(preview.clone()));
-                self.preview_modal = Some(PreviewModal::new(PreviewData::Helm(preview)));
+                self.preview_modal = Some(PreviewModal::new(PreviewModalKind::Preview(
+                    PreviewData::Helm(preview),
+                )));
             }
             _ => {}
         }
@@ -296,7 +296,9 @@ impl App {
                     &selected_docker_image_indices(&self.config, &self.docker_selected),
                 );
                 self.last_preview = Some(PreviewData::Docker(preview.clone()));
-                self.preview_modal = Some(PreviewModal::new(PreviewData::Docker(preview)));
+                self.preview_modal = Some(PreviewModal::new(PreviewModalKind::Preview(
+                    PreviewData::Docker(preview),
+                )));
             }
             _ => {}
         }
@@ -358,16 +360,54 @@ impl App {
         match key.code {
             KeyCode::Esc => self.preview_modal = None,
             KeyCode::Enter => {
-                if self.job_is_running() {
-                    self.status_message = "A job is already running".to_string();
+                let Some(modal) = self.preview_modal.clone() else {
+                    return Ok(());
+                };
+
+                if let PreviewModalKind::ConfirmGitPreview {
+                    indices, preset, ..
+                } = modal.kind
+                {
+                    if self.preview_generation_active {
+                        self.status_message =
+                            "Git preview generation is already running".to_string();
+                        self.status_indicator_visible = true;
+                        self.preview_modal = None;
+                        return Ok(());
+                    }
+                    if self.job_is_running() {
+                        self.status_message = "A job is already running".to_string();
+                        self.status_indicator_visible = true;
+                        self.preview_modal = None;
+                        return Ok(());
+                    }
+
+                    self.preview_generation_active = true;
+                    self.status_message = format!(
+                        "Preparing Git preview for {} repos in the {} window",
+                        indices.len(),
+                        preset.label()
+                    );
+                    self.status_indicator_visible = true;
+                    self.preview_modal = None;
+                    spawn_git_preview_generation(
+                        self.config.clone(),
+                        indices,
+                        preset,
+                        Arc::clone(&self.runner),
+                        self.job_sender.clone(),
+                    )
+                    .await;
                     return Ok(());
                 }
 
-                let Some(preview) = self
-                    .preview_modal
-                    .as_ref()
-                    .map(|modal| modal.preview.clone())
-                else {
+                if self.job_is_running() {
+                    self.status_message = "A job is already running".to_string();
+                    self.status_indicator_visible = true;
+                    return Ok(());
+                }
+
+                let Some(preview) = modal.preview() else {
                     return Ok(());
                 };
                 self.status_message = "Started export job".to_string();
@@ -460,24 +500,33 @@ impl App {
         Ok(())
     }
 
-    async fn generate_git_preview(&mut self) -> Result<GitPreview> {
-        let indices = selected_git_repo_indices(&self.config, &self.git_selected);
-        let preset = TimeWindowPreset::ALL[self.git_preset_index];
-        let preview =
-            build_git_preview(&self.config, &indices, preset, self.runner.as_ref()).await?;
-        self.status_message = format!(
-            "Previewed {} repos with {} included",
-            indices.len(),
-            preview.included.len()
-        );
-        Ok(preview)
-    }
-
     fn handle_job_event(&mut self, job: JobEvent) {
         match job {
             JobEvent::Started { kind, description } => {
                 self.current_job = Some(CurrentJob::new(kind, description.clone()));
                 self.status_message = description;
+                self.status_indicator_visible = true;
+            }
+            JobEvent::PreviewStarted(message) => {
+                self.preview_generation_active = true;
+                self.status_message = message;
+                self.status_indicator_visible = true;
+            }
+            JobEvent::PreviewReady(preview) => {
+                self.preview_generation_active = false;
+                self.status_message = format!(
+                    "Git preview ready: {} repos will be included",
+                    preview.included.len()
+                );
+                self.status_indicator_visible = true;
+                self.last_preview = Some(PreviewData::Git(preview.clone()));
+                self.preview_modal = Some(PreviewModal::new(PreviewModalKind::Preview(
+                    PreviewData::Git(preview),
+                )));
+            }
+            JobEvent::PreviewFailed(error) => {
+                self.preview_generation_active = false;
+                self.status_message = format!("Git preview failed: {error}");
                 self.status_indicator_visible = true;
             }
             JobEvent::Log(message) => {
@@ -976,12 +1025,13 @@ impl App {
         let area = centered_rect(80, 70, frame.area());
         frame.render_widget(Clear, area);
         let body = modal.summary();
+        let (title, color) = modal.title_and_color();
         frame.render_widget(
             Paragraph::new(body).wrap(Wrap { trim: true }).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(preview_kind_color(&modal.preview)))
-                    .title(format!("{} Preview", modal.preview.title())),
+                    .border_style(Style::default().fg(color))
+                    .title(title),
             ),
             area,
         );
@@ -1033,6 +1083,16 @@ impl App {
     }
 
     fn footer_status_spans(&self) -> Vec<Span<'static>> {
+        if self.preview_generation_active {
+            return vec![
+                status_badge_span("PREVIEW"),
+                Span::raw(" "),
+                Span::styled(
+                    self.status_message.clone(),
+                    Style::default().fg(Color::White),
+                ),
+            ];
+        }
         if self.status_indicator_visible {
             if let Some(job) = self.current_job.as_ref() {
                 return vec![
@@ -1058,6 +1118,9 @@ impl App {
     }
 
     fn footer_border_color(&self) -> Color {
+        if self.preview_generation_active {
+            return theme_warn();
+        }
         if self.status_indicator_visible {
             if let Some(job) = self.current_job.as_ref() {
                 return status_label_color(job_status_label(job));
@@ -1093,6 +1156,29 @@ impl App {
                 .filter(|selected| **selected)
                 .count()
         );
+    }
+
+    fn open_git_preview_confirmation(&mut self) -> Result<()> {
+        if self.preview_generation_active {
+            self.status_message = "Git preview generation is already running".to_string();
+            self.status_indicator_visible = true;
+            return Ok(());
+        }
+
+        let indices = selected_git_repo_indices(&self.config, &self.git_selected);
+        if indices.is_empty() {
+            return Err(eyre!(
+                "Select at least one Git repository before previewing"
+            ));
+        }
+
+        let preset = TimeWindowPreset::ALL[self.git_preset_index];
+        self.preview_modal = Some(PreviewModal::new(PreviewModalKind::ConfirmGitPreview {
+            repo_count: indices.len(),
+            indices,
+            preset,
+        }));
+        Ok(())
     }
 
     fn sync_helm_selection_state(&mut self) {
@@ -1522,30 +1608,65 @@ impl ConfigSection {
 
 #[derive(Clone, Debug)]
 struct PreviewModal {
-    preview: PreviewData,
+    kind: PreviewModalKind,
 }
 
 impl PreviewModal {
-    fn new(preview: PreviewData) -> Self {
-        Self { preview }
+    fn new(kind: PreviewModalKind) -> Self {
+        Self { kind }
+    }
+
+    fn preview(&self) -> Option<PreviewData> {
+        match &self.kind {
+            PreviewModalKind::Preview(preview) => Some(preview.clone()),
+            PreviewModalKind::ConfirmGitPreview { .. } => None,
+        }
+    }
+
+    fn title_and_color(&self) -> (String, Color) {
+        match &self.kind {
+            PreviewModalKind::ConfirmGitPreview { .. } => {
+                ("Prepare Git Preview".to_string(), theme_warn())
+            }
+            PreviewModalKind::Preview(preview) => (
+                format!("{} Preview", preview.title()),
+                preview_kind_color(preview),
+            ),
+        }
     }
 
     fn summary(&self) -> String {
-        match &self.preview {
-            PreviewData::Git(preview) => format!(
+        match &self.kind {
+            PreviewModalKind::ConfirmGitPreview {
+                repo_count, preset, ..
+            } => format!(
+                "This Git preview may take a little while while we fetch updates and determine which repositories should be bundled.\n\nSelected repos: {repo_count}\nTime window: {}\n\nPress Enter to start preparing the preview or Esc to cancel.",
+                preset.label()
+            ),
+            PreviewModalKind::Preview(PreviewData::Git(preview)) => format!(
                 "{}\n\nPress Enter to start the Git export or Esc to cancel.",
                 render_git_preview_modal(preview)
             ),
-            PreviewData::Helm(preview) => format!(
+            PreviewModalKind::Preview(PreviewData::Helm(preview)) => format!(
                 "{}\n\nPress Enter to start the Helm export or Esc to cancel.",
                 render_helm_preview_modal(preview)
             ),
-            PreviewData::Docker(preview) => format!(
+            PreviewModalKind::Preview(PreviewData::Docker(preview)) => format!(
                 "{}\n\nPress Enter to start the Docker export or Esc to cancel.",
                 render_docker_preview_modal(preview)
             ),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+enum PreviewModalKind {
+    ConfirmGitPreview {
+        repo_count: usize,
+        indices: Vec<usize>,
+        preset: TimeWindowPreset,
+    },
+    Preview(PreviewData),
 }
 
 #[derive(Clone, Debug)]
@@ -1904,7 +2025,7 @@ fn job_status_label(job: &CurrentJob) -> &'static str {
 
 fn status_label_color(label: &str) -> Color {
     match label {
-        "RUN" => theme_warn(),
+        "PREVIEW" | "RUN" => theme_warn(),
         "DONE" | "OK" => theme_success(),
         "FAIL" => theme_error(),
         "IDLE" => theme_info(),
