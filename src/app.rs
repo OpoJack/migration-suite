@@ -981,9 +981,15 @@ impl App {
 
         let body = match self.config_focus {
             ConfigSection::Output => format!(
-                "Output directory: {}\nRecent run limit: {}\n\nPress `e` to edit and `s` to save.",
+                "Output directory: {}\nRecent run limit: {}\nSplit large transfers: {}\nMax transfer size (MB): {}\n\nPress `e` to edit and `s` to save.",
                 self.config.output.base_dir.display(),
-                self.config.output.recent_run_limit
+                self.config.output.recent_run_limit,
+                if self.config.output.split_large_transfers {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                self.config.output.max_transfer_size_mb
             ),
             ConfigSection::GitDefaults => format!(
                 "Default branches: {}\n\nPress `e` to edit and `s` to save.",
@@ -1363,6 +1369,14 @@ impl App {
                         "Recent Run Limit",
                         self.config.output.recent_run_limit.to_string(),
                     ),
+                    (
+                        "Split Large Transfers",
+                        self.config.output.split_large_transfers.to_string(),
+                    ),
+                    (
+                        "Max Transfer Size MB",
+                        self.config.output.max_transfer_size_mb.to_string(),
+                    ),
                 ],
             ),
             ConfigSection::GitDefaults => FormModal::new(
@@ -1480,6 +1494,8 @@ impl App {
             FormKind::EditOutput => {
                 self.config.output.base_dir = PathBuf::from(values[0].clone());
                 self.config.output.recent_run_limit = values[1].parse::<usize>()?;
+                self.config.output.split_large_transfers = parse_bool_flag(&values[2])?;
+                self.config.output.max_transfer_size_mb = values[3].parse::<u64>()?;
             }
             FormKind::EditGitDefaults => {
                 self.config.git.default_branches = csv_to_branches(&values[0]);
@@ -2217,6 +2233,14 @@ fn optional_branches(value: &str) -> Option<Vec<String>> {
         None
     } else {
         Some(branches)
+    }
+}
+
+fn parse_bool_flag(value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "y" | "1" | "on" | "enabled" => Ok(true),
+        "false" | "no" | "n" | "0" | "off" | "disabled" => Ok(false),
+        _ => Err(eyre!("expected a boolean value like true/false or yes/no")),
     }
 }
 

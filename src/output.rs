@@ -68,6 +68,47 @@ pub fn base64_encode_file(src_file: &Path, dest_file: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn split_file(path: &Path, max_bytes: u64) -> Result<Vec<PathBuf>> {
+    if file_size(path)? <= max_bytes {
+        return Ok(vec![path.to_path_buf()]);
+    }
+
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut parts = Vec::new();
+    let mut part_index = 1usize;
+
+    loop {
+        let part_path = split_part_path(path, part_index);
+        let mut writer = BufWriter::new(File::create(&part_path)?);
+        let mut remaining = max_bytes;
+        let mut wrote_any = false;
+        let mut buffer = [0u8; 8192];
+
+        while remaining > 0 {
+            let chunk_len = remaining.min(buffer.len() as u64) as usize;
+            let read = reader.read(&mut buffer[..chunk_len])?;
+            if read == 0 {
+                break;
+            }
+            writer.write_all(&buffer[..read])?;
+            remaining -= read as u64;
+            wrote_any = true;
+        }
+
+        writer.flush()?;
+        if !wrote_any {
+            fs::remove_file(&part_path)?;
+            break;
+        }
+
+        parts.push(part_path);
+        part_index += 1;
+    }
+
+    fs::remove_file(path)?;
+    Ok(parts)
+}
+
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut file = BufReader::new(File::open(path)?);
     let mut digest = Sha256::new();
@@ -125,6 +166,19 @@ fn resolve_base_dir(base_dir: &Path) -> Result<PathBuf> {
     } else {
         Ok(env::current_dir()?.join(base_dir))
     }
+}
+
+fn split_part_path(path: &Path, part_index: usize) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "payload".to_string());
+    let part_name = if let Some(prefix) = file_name.strip_suffix(".txt") {
+        format!("{prefix}.part{part_index:03}.txt")
+    } else {
+        format!("{file_name}.part{part_index:03}")
+    };
+    path.with_file_name(part_name)
 }
 
 pub fn sanitize_filename(value: &str) -> String {
@@ -211,5 +265,31 @@ mod tests {
         let encoded = fs::read_to_string(dest).expect("read");
 
         assert_eq!(encoded, STANDARD.encode("hello"));
+    }
+
+    #[test]
+    fn split_file_creates_numbered_parts_and_removes_original() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("bundle.tar.gz.txt");
+        fs::write(&path, vec![b'x'; 11]).expect("write");
+
+        let parts = split_file(&path, 4).expect("split");
+
+        assert_eq!(parts.len(), 3);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.file_name().unwrap().to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "bundle.tar.gz.part001.txt".to_string(),
+                "bundle.tar.gz.part002.txt".to_string(),
+                "bundle.tar.gz.part003.txt".to_string(),
+            ]
+        );
+        assert_eq!(file_size(&parts[0]).expect("part 1 size"), 4);
+        assert_eq!(file_size(&parts[1]).expect("part 2 size"), 4);
+        assert_eq!(file_size(&parts[2]).expect("part 3 size"), 3);
+        assert!(!path.exists());
     }
 }

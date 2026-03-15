@@ -123,6 +123,11 @@ impl AppConfig {
         if self.output.recent_run_limit == 0 {
             return Err(eyre!("output.recent_run_limit must be greater than zero"));
         }
+        if self.output.max_transfer_size_mb == 0 {
+            return Err(eyre!(
+                "output.max_transfer_size_mb must be greater than zero"
+            ));
+        }
         if self.git.default_branches.is_empty() {
             return Err(eyre!(
                 "git.default_branches must include at least one branch"
@@ -198,6 +203,10 @@ pub struct OutputConfig {
     pub base_dir: PathBuf,
     #[serde(default = "default_recent_run_limit")]
     pub recent_run_limit: usize,
+    #[serde(default = "default_split_large_transfers")]
+    pub split_large_transfers: bool,
+    #[serde(default = "default_max_transfer_size_mb")]
+    pub max_transfer_size_mb: u64,
 }
 
 impl Default for OutputConfig {
@@ -205,6 +214,8 @@ impl Default for OutputConfig {
         Self {
             base_dir: default_output_dir(),
             recent_run_limit: default_recent_run_limit(),
+            split_large_transfers: default_split_large_transfers(),
+            max_transfer_size_mb: default_max_transfer_size_mb(),
         }
     }
 }
@@ -415,6 +426,14 @@ fn default_recent_run_limit() -> usize {
     10
 }
 
+fn default_split_large_transfers() -> bool {
+    false
+}
+
+fn default_max_transfer_size_mb() -> u64 {
+    200
+}
+
 fn default_git_branches() -> Vec<String> {
     vec!["develop".to_string()]
 }
@@ -447,6 +466,8 @@ mod tests {
 [output]
 base_dir = "exports"
 recent_run_limit = 5
+split_large_transfers = true
+max_transfer_size_mb = 150
 
 [git]
 default_branches = ["develop", "release/abc"]
@@ -501,6 +522,8 @@ enabled = false
             output: OutputConfig {
                 base_dir: PathBuf::from("exports"),
                 recent_run_limit: 7,
+                split_large_transfers: true,
+                max_transfer_size_mb: 250,
             },
             git: GitConfig {
                 default_branches: vec!["develop".to_string(), "release/abc".to_string()],
@@ -540,6 +563,8 @@ enabled = false
             r#"[output]
 base_dir = "exports"
 recent_run_limit = 7
+split_large_transfers = true
+max_transfer_size_mb = 250
 
 [includes]
 git = "migration-suite.git.toml"

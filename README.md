@@ -22,6 +22,8 @@ Create `migration-suite.toml` in the project root:
 [output]
 base_dir = "migration-exports"
 recent_run_limit = 10
+split_large_transfers = false
+max_transfer_size_mb = 200
 
 [includes]
 git = "migration-suite.git.toml"
@@ -124,9 +126,12 @@ migration-exports/
 
 Helm runs create a combined `helm-charts_<timestamp>.tar.gz.txt` payload. Docker runs create one payload per selected image, for example `user-api_0.3.4-dev.tar.gz.txt`.
 
+If `output.split_large_transfers` is enabled and a final transfer payload exceeds `output.max_transfer_size_mb`, the app splits it into numbered files such as `Git-migration_<timestamp>.tar.gz.part001.txt`, `part002.txt`, and so on.
+
 ## Notes
 
 - `git.repos[].remote` controls which remote is fetched before Git preview/export. If omitted, the app uses `origin`.
+- `output.split_large_transfers` controls whether oversized transfer payloads are automatically split into numbered `.partNN.txt` files.
 - New installs default to split config files when you save from the TUI. Existing single-file configs still load and save correctly.
 - Git LFS export is not implemented in v1 and is called out in the Git manifest notes.
 - Docker exports run sequentially by default.

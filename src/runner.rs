@@ -15,7 +15,7 @@ use crate::{
     output::{
         base64_encode_file, create_run_workspace, docker_output_name, file_size, git_output_name,
         gzip_file, helm_output_name, load_recent_manifests, sanitize_filename, sha256_file,
-        tar_gz_directory, write_log,
+        split_file, tar_gz_directory, write_log,
     },
 };
 
@@ -347,7 +347,7 @@ async fn run_git_export(
     let started_at = Utc::now();
     let mut log_lines = Vec::new();
     let mut items = Vec::new();
-    let result: Result<ArtifactOutput> = async {
+    let result: Result<Vec<ArtifactOutput>> = async {
         for repo in &preview.included {
             let repo_config = config
                 .git
@@ -424,18 +424,13 @@ async fn run_git_export(
         base64_encode_file(&tar_gz_path, &final_txt_path)?;
         fs::remove_file(&tar_gz_path)?;
         fs::remove_dir_all(&git_root)?;
-        Ok(ArtifactOutput {
-            label: "git_payload".to_string(),
-            path: final_txt_path.clone(),
-            sha256: sha256_file(&final_txt_path)?,
-            size_bytes: file_size(&final_txt_path)?,
-        })
+        build_transfer_outputs(&final_txt_path, "git_payload", &config.output)
     }
     .await;
 
     let finished_at = Utc::now();
     match result {
-        Ok(output) => {
+        Ok(outputs) => {
             write_log(&workspace.log_path, &log_lines)?;
             let manifest = RunManifest {
                 run_id: workspace.run_id,
@@ -446,7 +441,7 @@ async fn run_git_export(
                 output_dir: workspace.root_dir.clone(),
                 summary: format!("Exported {} git repos", items.len()),
                 notes: vec!["git_lfs_export_not_implemented".to_string()],
-                outputs: vec![output],
+                outputs,
                 items,
                 logs: logs_to_entries(&log_lines, finished_at),
             };
@@ -489,7 +484,7 @@ async fn run_helm_export(
     let mut log_lines = Vec::new();
     let mut items = Vec::new();
     let finished_at = Utc::now();
-    let result: Result<ArtifactOutput> = async {
+    let result: Result<Vec<ArtifactOutput>> = async {
         for chart in &preview.charts {
             log(
                 tx,
@@ -522,17 +517,12 @@ async fn run_helm_export(
         base64_encode_file(&tar_gz_path, &final_txt_path)?;
         fs::remove_file(&tar_gz_path)?;
         fs::remove_dir_all(&charts_dir)?;
-        Ok(ArtifactOutput {
-            label: "helm_payload".to_string(),
-            path: final_txt_path.clone(),
-            sha256: sha256_file(&final_txt_path)?,
-            size_bytes: file_size(&final_txt_path)?,
-        })
+        build_transfer_outputs(&final_txt_path, "helm_payload", &config.output)
     }
     .await;
 
     match result {
-        Ok(output) => {
+        Ok(outputs) => {
             write_log(&workspace.log_path, &log_lines)?;
             let manifest = RunManifest {
                 run_id: workspace.run_id,
@@ -543,7 +533,7 @@ async fn run_helm_export(
                 output_dir: workspace.root_dir.clone(),
                 summary: format!("Exported {} helm charts", items.len()),
                 notes: Vec::new(),
-                outputs: vec![output],
+                outputs,
                 items,
                 logs: logs_to_entries(&log_lines, finished_at),
             };
@@ -623,12 +613,11 @@ async fn run_docker_export(
             fs::remove_file(&tar_path)?;
             fs::remove_file(&gz_path)?;
             fs::remove_dir_all(&image_dir)?;
-            outputs.push(ArtifactOutput {
-                label: image.name.clone(),
-                path: txt_path.clone(),
-                sha256: sha256_file(&txt_path)?,
-                size_bytes: file_size(&txt_path)?,
-            });
+            outputs.extend(build_transfer_outputs(
+                &txt_path,
+                &image.name,
+                &config.output,
+            )?);
             items.push(ManifestItem {
                 name: image.name.clone(),
                 item_type: "docker_image".to_string(),
@@ -746,6 +735,37 @@ fn persist_failed_run(
     };
     manifest.save(&workspace.manifest_path)?;
     Ok(())
+}
+
+fn build_transfer_outputs(
+    path: &Path,
+    label: &str,
+    output_config: &crate::config::OutputConfig,
+) -> Result<Vec<ArtifactOutput>> {
+    let paths = if output_config.split_large_transfers {
+        split_file(path, output_config.max_transfer_size_mb * 1024 * 1024)?
+    } else {
+        vec![path.to_path_buf()]
+    };
+    let split_into_parts = paths.len() > 1;
+
+    paths
+        .into_iter()
+        .enumerate()
+        .map(|(index, part_path)| {
+            let part_label = if !split_into_parts {
+                label.to_string()
+            } else {
+                format!("{label}.part{:03}", index + 1)
+            };
+            Ok(ArtifactOutput {
+                label: part_label,
+                path: part_path.clone(),
+                sha256: sha256_file(&part_path)?,
+                size_bytes: file_size(&part_path)?,
+            })
+        })
+        .collect()
 }
 
 async fn branch_has_commits_in_window(
@@ -1371,6 +1391,8 @@ mod tests {
             output: OutputConfig {
                 base_dir: temp.path().join("exports"),
                 recent_run_limit: 5,
+                split_large_transfers: false,
+                max_transfer_size_mb: 200,
             },
             git: GitConfig::default(),
             helm: Default::default(),
