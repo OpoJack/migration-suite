@@ -912,10 +912,15 @@ impl App {
             layout[0],
         );
 
-        let details = if let Some(job) = self.current_job.as_ref() {
-            render_current_job(job)
+        let details = if self.job_is_running() {
+            self.current_job
+                .as_ref()
+                .map(render_current_job)
+                .unwrap_or_else(|| "No active or recent jobs yet.".to_string())
         } else if let Some(manifest) = self.recent_runs.get(self.jobs_cursor) {
             render_manifest(manifest)
+        } else if let Some(job) = self.current_job.as_ref() {
+            render_current_job(job)
         } else {
             "No active or recent jobs yet.".to_string()
         };
