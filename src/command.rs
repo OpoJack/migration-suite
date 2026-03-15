@@ -49,7 +49,14 @@ impl CommandRunner for SystemCommandRunner {
         let mut command = Command::new(program);
         command.args(args);
         if let Some(cwd) = cwd {
-            command.current_dir(cwd);
+            let cwd = normalize_runtime_path(cwd);
+            if !cwd.is_dir() {
+                bail!(
+                    "working directory does not exist or is not a directory: {}",
+                    cwd.display()
+                );
+            }
+            command.current_dir(&cwd);
         }
 
         let output = command.output().await?;
@@ -134,5 +141,85 @@ impl CommandRunner for MockCommandRunner {
             .get(&key)
             .cloned()
             .ok_or_else(|| eyre!("no mock response for {:?}", key))
+    }
+}
+
+fn normalize_runtime_path(path: &Path) -> PathBuf {
+    let normalized = replace_control_escapes(&path.to_string_lossy());
+    let normalized = convert_msys_path(&normalized);
+    PathBuf::from(expand_home_dir(&normalized))
+}
+
+fn replace_control_escapes(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|ch| match ch {
+            '\t' => ['\\', 't'].into_iter().collect::<Vec<_>>(),
+            '\n' => ['\\', 'n'].into_iter().collect::<Vec<_>>(),
+            '\r' => ['\\', 'r'].into_iter().collect::<Vec<_>>(),
+            '\u{0008}' => ['\\', 'b'].into_iter().collect::<Vec<_>>(),
+            '\u{000C}' => ['\\', 'f'].into_iter().collect::<Vec<_>>(),
+            _ => vec![ch],
+        })
+        .collect()
+}
+
+fn expand_home_dir(value: &str) -> String {
+    if let Some(stripped) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            return PathBuf::from(home)
+                .join(stripped)
+                .to_string_lossy()
+                .to_string();
+        }
+    }
+    value.to_string()
+}
+
+fn convert_msys_path(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+    {
+        let drive = (bytes[1] as char).to_ascii_uppercase();
+        let rest = value[3..].replace('/', "\\");
+        if rest.is_empty() {
+            format!("{drive}:\\")
+        } else {
+            format!("{drive}:\\{rest}")
+        }
+    } else {
+        value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_runtime_path_restores_common_toml_escapes() {
+        let raw = PathBuf::from("C:\ttools\runtime\nrepo");
+        let normalized = normalize_runtime_path(&raw);
+        assert_eq!(normalized.to_string_lossy(), r"C:\ttools\runtime\nrepo");
+    }
+
+    #[test]
+    fn replace_control_escapes_preserves_plain_paths() {
+        assert_eq!(replace_control_escapes("/tmp/repo"), "/tmp/repo");
+    }
+
+    #[test]
+    fn convert_msys_path_turns_git_bash_style_into_windows_path() {
+        assert_eq!(
+            convert_msys_path("/c/Users/jack/repo"),
+            r"C:\Users\jack\repo"
+        );
+        assert_eq!(convert_msys_path("/d/work"), r"D:\work");
     }
 }
