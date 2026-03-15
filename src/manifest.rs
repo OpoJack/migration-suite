@@ -94,7 +94,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("manifest.json");
         let manifest = RunManifest {
-            run_id: "git-20260101T010101Z".to_string(),
+            run_id: "git-2026-01-01_01-01-01".to_string(),
             kind: JobKind::Git,
             status: RunStatus::Success,
             started_at: Utc::now(),

@@ -23,7 +23,7 @@ pub struct RunWorkspace {
 }
 
 pub fn timestamp_slug() -> String {
-    Utc::now().format("%Y%m%dT%H%M%SZ").to_string()
+    Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
 pub fn create_run_workspace(base_dir: &Path, kind: &str) -> Result<RunWorkspace> {
@@ -167,12 +167,12 @@ mod tests {
             "user-api_0.3.4-dev.tar.gz.txt"
         );
         assert_eq!(
-            git_output_name("20260314T010101Z"),
-            "Git-migration_20260314T010101Z.tar.gz.txt"
+            git_output_name("2026-03-14_01-01-01"),
+            "Git-migration_2026-03-14_01-01-01.tar.gz.txt"
         );
         assert_eq!(
-            helm_output_name("20260314T010101Z"),
-            "helm-charts_20260314T010101Z.tar.gz.txt"
+            helm_output_name("2026-03-14_01-01-01"),
+            "helm-charts_2026-03-14_01-01-01.tar.gz.txt"
         );
     }
 

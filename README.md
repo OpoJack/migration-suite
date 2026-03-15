@@ -110,14 +110,14 @@ Each run creates a timestamped directory under `output.base_dir`:
 
 ```text
 migration-exports/
-  git-20260314T220000Z/
+  git-2026-03-14_22-00-00/
     git/
       auth-service/
         bundle
       user-api/
         bundle
-    Git-migration_20260314T220000Z.tar.gz
-    Git-migration_20260314T220000Z.tar.gz.txt
+    Git-migration_2026-03-14_22-00-00.tar.gz
+    Git-migration_2026-03-14_22-00-00.tar.gz.txt
     job.log
     manifest.json
 ```
