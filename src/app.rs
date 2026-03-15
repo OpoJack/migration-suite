@@ -524,6 +524,10 @@ impl App {
                 Constraint::Length(9),
             ])
             .split(area);
+        let summary_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .split(layout[0]);
 
         let preset_line = TimeWindowPreset::ALL
             .iter()
@@ -544,7 +548,17 @@ impl App {
         frame.render_widget(
             Paragraph::new(Line::from(preset_line))
                 .block(Block::default().borders(Borders::ALL).title("Time Window")),
-            layout[0],
+            summary_layout[0],
+        );
+        frame.render_widget(
+            Paragraph::new(self.config.git.default_branches.join(", "))
+                .wrap(Wrap { trim: true })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Default Branches"),
+                ),
+            summary_layout[1],
         );
 
         let visible_rows = visible_list_rows(layout[1]);
@@ -564,7 +578,6 @@ impl App {
                 } else {
                     "[ ]"
                 };
-                let branches = repo.branches(&self.config.git.default_branches).join(", ");
                 let style = if index == self.git_cursor {
                     Style::default()
                         .fg(Color::Cyan)
@@ -572,7 +585,16 @@ impl App {
                 } else {
                     Style::default()
                 };
-                ListItem::new(format!("{cursor} {checked} {} ({branches})", repo.name)).style(style)
+                let label = if let Some(branches) = repo.branches.as_ref() {
+                    format!(
+                        "{cursor} {checked} {} [branches: {}]",
+                        repo.name,
+                        branches.join(", ")
+                    )
+                } else {
+                    format!("{cursor} {checked} {}", repo.name)
+                };
+                ListItem::new(label).style(style)
             })
             .collect::<Vec<_>>();
         frame.render_widget(
@@ -611,6 +633,20 @@ impl App {
             self.config.helm.charts.len(),
             visible_rows,
         );
+        let visible_charts = self
+            .config
+            .helm
+            .charts
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect::<Vec<_>>();
+        let chart_name_width = visible_charts
+            .iter()
+            .map(|(_, chart)| chart.name.len())
+            .max()
+            .unwrap_or(0);
         let items = self
             .config
             .helm
@@ -633,11 +669,8 @@ impl App {
                 } else {
                     Style::default()
                 };
-                ListItem::new(format!(
-                    "{cursor} {checked} {} => {} ({})",
-                    chart.name, chart.reference, chart.version
-                ))
-                .style(style)
+                let name = format!("{:<width$}", chart.name, width = chart_name_width);
+                ListItem::new(format!("{cursor} {checked} {name}  {}", chart.version)).style(style)
             })
             .collect::<Vec<_>>();
         frame.render_widget(
@@ -1315,15 +1348,15 @@ impl PreviewModal {
         match &self.preview {
             PreviewData::Git(preview) => format!(
                 "{}\n\nPress Enter to start the Git export or Esc to cancel.",
-                render_git_preview_summary(preview)
+                render_git_preview_modal(preview)
             ),
             PreviewData::Helm(preview) => format!(
                 "{}\n\nPress Enter to start the Helm export or Esc to cancel.",
-                render_helm_preview_summary(preview)
+                render_helm_preview_modal(preview)
             ),
             PreviewData::Docker(preview) => format!(
                 "{}\n\nPress Enter to start the Docker export or Esc to cancel.",
-                render_docker_preview_summary(preview)
+                render_docker_preview_modal(preview)
             ),
         }
     }
@@ -1465,6 +1498,86 @@ fn render_docker_preview_summary(preview: &DockerPreview) -> String {
             image.name, image.reference, image.output_name
         ));
     }
+    lines.join("\n")
+}
+
+fn render_git_preview_modal(preview: &GitPreview) -> String {
+    let mut lines = vec![
+        format!("Window: {}", preview.preset.label()),
+        format!("Will export: {} repos", preview.included.len()),
+        format!("Will skip: {} repos", preview.skipped.len()),
+    ];
+
+    let tagged = preview
+        .included
+        .iter()
+        .filter(|repo| !repo.tags_in_window.is_empty())
+        .count();
+    if tagged > 0 {
+        lines.push(format!("Repos with new tags: {}", tagged));
+    }
+
+    let overrides = preview
+        .included
+        .iter()
+        .filter(|repo| !repo.changed_branches.is_empty())
+        .collect::<Vec<_>>();
+    if !overrides.is_empty() {
+        lines.push(String::new());
+        lines.push("Changed branches:".to_string());
+        for repo in overrides.iter().take(5) {
+            lines.push(format!(
+                "- {}: {}",
+                repo.name,
+                repo.changed_branches.join(", ")
+            ));
+        }
+        if overrides.len() > 5 {
+            lines.push(format!("- ...and {} more repos", overrides.len() - 5));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn render_helm_preview_modal(preview: &HelmPreview) -> String {
+    let mut lines = vec![
+        format!("Charts selected: {}", preview.charts.len()),
+        format!("Output: {}", preview.output_name),
+        "Action: pull the selected chart versions and package one transfer payload.".to_string(),
+    ];
+
+    if !preview.charts.is_empty() {
+        lines.push(String::new());
+        lines.push("Versions:".to_string());
+        for chart in preview.charts.iter().take(6) {
+            lines.push(format!("- {} {}", chart.name, chart.version));
+        }
+        if preview.charts.len() > 6 {
+            lines.push(format!("- ...and {} more charts", preview.charts.len() - 6));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn render_docker_preview_modal(preview: &DockerPreview) -> String {
+    let mut lines = vec![
+        format!("Images selected: {}", preview.images.len()),
+        "Action: export one transfer file per selected image.".to_string(),
+    ];
+
+    if !preview.images.is_empty() {
+        lines.push(String::new());
+        lines.push("Outputs:".to_string());
+        for image in preview.images.iter().take(6) {
+            lines.push(format!("- {}", image.output_name));
+        }
+        if preview.images.len() > 6 {
+            lines.push(format!("- ...and {} more files", preview.images.len() - 6));
+        }
+    }
+
     lines.join("\n")
 }
 
