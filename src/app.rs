@@ -18,7 +18,7 @@ use crate::{
         AppConfig, ConfigLayout, DockerImageConfig, GitRepoConfig, HelmChartConfig,
         branches_to_csv, config_path_from_cwd, csv_to_branches,
     },
-    manifest::{JobKind, RunManifest},
+    manifest::{JobKind, RunManifest, RunStatus},
     runner::{
         DockerPreview, GitPreview, HelmPreview, JobEvent, PreviewData, TimeWindowPreset,
         build_docker_preview, build_git_preview, build_helm_preview, recent_runs,
@@ -505,11 +505,13 @@ impl App {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_accent()))
                     .title("Migration Suite"),
             )
             .highlight_style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Color::Black)
+                    .bg(theme_accent())
                     .add_modifier(Modifier::BOLD),
             );
         frame.render_widget(tabs, area);
@@ -546,8 +548,12 @@ impl App {
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            Paragraph::new(Line::from(preset_line))
-                .block(Block::default().borders(Borders::ALL).title("Time Window")),
+            Paragraph::new(Line::from(preset_line)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_warn()))
+                    .title("Time Window"),
+            ),
             summary_layout[0],
         );
         frame.render_widget(
@@ -556,6 +562,7 @@ impl App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme_info()))
                         .title("Default Branches"),
                 ),
             summary_layout[1],
@@ -572,36 +579,39 @@ impl App {
             .skip(start)
             .take(end.saturating_sub(start))
             .map(|(index, repo)| {
-                let cursor = if index == self.git_cursor { ">" } else { " " };
-                let checked = if self.git_selected.get(index).copied().unwrap_or(false) {
-                    "[x]"
-                } else {
-                    "[ ]"
-                };
                 let style = if index == self.git_cursor {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(theme_accent())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
-                let label = if let Some(branches) = repo.branches.as_ref() {
-                    format!(
-                        "{cursor} {checked} {} [branches: {}]",
-                        repo.name,
-                        branches.join(", ")
-                    )
-                } else {
-                    format!("{cursor} {checked} {}", repo.name)
-                };
-                ListItem::new(label).style(style)
+                let mut spans = vec![
+                    cursor_span(index == self.git_cursor),
+                    Span::raw(" "),
+                    selection_span(self.git_selected.get(index).copied().unwrap_or(false)),
+                    Span::raw(" "),
+                    Span::styled(repo.name.clone(), style),
+                ];
+                if let Some(branches) = repo.branches.as_ref() {
+                    spans.push(Span::styled(
+                        format!("  [override: {}]", branches.join(", ")),
+                        Style::default().fg(theme_warn()),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
-                "Git Repositories {}",
-                pagination_label(start, end, self.config.git.repos.len())
-            ))),
+            List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_git()))
+                    .title(format!(
+                        "Git Repositories {}",
+                        pagination_label(start, end, self.config.git.repos.len())
+                    )),
+            ),
             layout[1],
         );
 
@@ -615,6 +625,7 @@ impl App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme_info()))
                         .title("Preview Summary"),
                 ),
             layout[2],
@@ -656,28 +667,37 @@ impl App {
             .skip(start)
             .take(end.saturating_sub(start))
             .map(|(index, chart)| {
-                let cursor = if index == self.helm_cursor { ">" } else { " " };
-                let checked = if self.helm_selected.get(index).copied().unwrap_or(false) {
-                    "[x]"
-                } else {
-                    "[ ]"
-                };
                 let style = if index == self.helm_cursor {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(theme_accent())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
                 let name = format!("{:<width$}", chart.name, width = chart_name_width);
-                ListItem::new(format!("{cursor} {checked} {name}  {}", chart.version)).style(style)
+                ListItem::new(Line::from(vec![
+                    cursor_span(index == self.helm_cursor),
+                    Span::raw(" "),
+                    selection_span(self.helm_selected.get(index).copied().unwrap_or(false)),
+                    Span::raw(" "),
+                    Span::styled(name, style),
+                    Span::styled(
+                        format!("  {}", chart.version),
+                        Style::default().fg(theme_info()),
+                    ),
+                ]))
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
-                "Helm Charts {}",
-                pagination_label(start, end, self.config.helm.charts.len())
-            ))),
+            List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_helm()))
+                    .title(format!(
+                        "Helm Charts {}",
+                        pagination_label(start, end, self.config.helm.charts.len())
+                    )),
+            ),
             layout[0],
         );
 
@@ -691,6 +711,7 @@ impl App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme_info()))
                         .title("Preview Summary"),
                 ),
             layout[1],
@@ -709,6 +730,20 @@ impl App {
             self.config.docker.images.len(),
             visible_rows,
         );
+        let visible_images = self
+            .config
+            .docker
+            .images
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect::<Vec<_>>();
+        let image_name_width = visible_images
+            .iter()
+            .map(|(_, image)| image.name.len())
+            .max()
+            .unwrap_or(0);
         let items = self
             .config
             .docker
@@ -718,35 +753,37 @@ impl App {
             .skip(start)
             .take(end.saturating_sub(start))
             .map(|(index, image)| {
-                let cursor = if index == self.docker_cursor {
-                    ">"
-                } else {
-                    " "
-                };
-                let checked = if self.docker_selected.get(index).copied().unwrap_or(false) {
-                    "[x]"
-                } else {
-                    "[ ]"
-                };
                 let style = if index == self.docker_cursor {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(theme_accent())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
-                ListItem::new(format!(
-                    "{cursor} {checked} {} => {}:{}",
-                    image.name, image.repository, image.tag
-                ))
-                .style(style)
+                let name = format!("{:<width$}", image.name, width = image_name_width);
+                ListItem::new(Line::from(vec![
+                    cursor_span(index == self.docker_cursor),
+                    Span::raw(" "),
+                    selection_span(self.docker_selected.get(index).copied().unwrap_or(false)),
+                    Span::raw(" "),
+                    Span::styled(name, style),
+                    Span::styled(
+                        format!("  {}", image.tag),
+                        Style::default().fg(theme_info()),
+                    ),
+                ]))
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
-                "Docker Images {}",
-                pagination_label(start, end, self.config.docker.images.len())
-            ))),
+            List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_docker()))
+                    .title(format!(
+                        "Docker Images {}",
+                        pagination_label(start, end, self.config.docker.images.len())
+                    )),
+            ),
             layout[0],
         );
 
@@ -760,6 +797,7 @@ impl App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme_info()))
                         .title("Preview Summary"),
                 ),
             layout[1],
@@ -777,24 +815,34 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, manifest)| {
-                let cursor = if index == self.jobs_cursor { ">" } else { " " };
-                let style = if index == self.jobs_cursor {
+                let row_style = if index == self.jobs_cursor {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(theme_accent())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
-                ListItem::new(format!(
-                    "{cursor} [{}] {}",
-                    manifest.kind.as_str(),
-                    manifest.summary
-                ))
-                .style(style)
+                ListItem::new(Line::from(vec![
+                    cursor_span(index == self.jobs_cursor),
+                    Span::raw(" "),
+                    status_badge_span(manifest_run_label(manifest.status.clone())),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("[{}]", manifest.kind.as_str()),
+                        Style::default().fg(theme_info()),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(manifest.summary.clone(), row_style),
+                ]))
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            List::new(items).block(Block::default().borders(Borders::ALL).title("Recent Runs")),
+            List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_info()))
+                    .title("Recent Runs"),
+            ),
             layout[0],
         );
 
@@ -806,9 +854,12 @@ impl App {
             "No active or recent jobs yet.".to_string()
         };
         frame.render_widget(
-            Paragraph::new(details)
-                .wrap(Wrap { trim: true })
-                .block(Block::default().borders(Borders::ALL).title("Job Details")),
+            Paragraph::new(details).wrap(Wrap { trim: true }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_info()))
+                    .title("Job Details"),
+            ),
             layout[1],
         );
     }
@@ -825,10 +876,16 @@ impl App {
             .collect::<Vec<_>>();
         let tabs = Tabs::new(titles)
             .select(self.config_focus.index())
-            .block(Block::default().borders(Borders::ALL).title("Config"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_muted()))
+                    .title("Config"),
+            )
             .highlight_style(
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(Color::Black)
+                    .bg(theme_warn())
                     .add_modifier(Modifier::BOLD),
             );
         frame.render_widget(tabs, layout[0]);
@@ -862,9 +919,12 @@ impl App {
             "Config Details"
         };
         frame.render_widget(
-            Paragraph::new(body)
-                .wrap(Wrap { trim: true })
-                .block(Block::default().borders(Borders::ALL).title(title)),
+            Paragraph::new(body).wrap(Wrap { trim: true }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_muted()))
+                    .title(title),
+            ),
             layout[1],
         );
     }
@@ -882,10 +942,18 @@ impl App {
                 "Tab switch  Left/Right section  Up/Down move  e edit  a add  d delete  Space toggle  s save  q quit"
             }
         };
-        let footer = Paragraph::new(format!("{}\n{hints}", self.footer_status_line()))
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title("Status"));
+        let footer = Paragraph::new(vec![
+            Line::from(self.footer_status_spans()),
+            Line::from(Span::styled(hints, Style::default().fg(theme_muted()))),
+        ])
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.footer_border_color()))
+                .title("Status"),
+        );
         frame.render_widget(footer, area);
     }
 
@@ -897,6 +965,7 @@ impl App {
             Paragraph::new(body).wrap(Wrap { trim: true }).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(Style::default().fg(preview_kind_color(&modal.preview)))
                     .title(format!("{} Preview", modal.preview.title())),
             ),
             area,
@@ -919,6 +988,7 @@ impl App {
             Paragraph::new(lines).wrap(Wrap { trim: true }).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme_warn()))
                     .title(format!("{} (Enter to save, Esc to cancel)", form.title)),
             ),
             area,
@@ -939,13 +1009,38 @@ impl App {
         }
     }
 
-    fn footer_status_line(&self) -> String {
+    fn footer_status_spans(&self) -> Vec<Span<'static>> {
         if self.status_indicator_visible {
             if let Some(job) = self.current_job.as_ref() {
-                return format!("Job: {}", compact_job_status(job));
+                return vec![
+                    status_badge_span(job_status_label(job)),
+                    Span::raw(" "),
+                    Span::styled(compact_job_status(job), Style::default().fg(Color::White)),
+                ];
             }
         }
-        format!("Status: {}", self.status_message)
+        vec![
+            Span::styled(
+                "STATUS",
+                Style::default()
+                    .fg(theme_info())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                self.status_message.clone(),
+                Style::default().fg(Color::White),
+            ),
+        ]
+    }
+
+    fn footer_border_color(&self) -> Color {
+        if self.status_indicator_visible {
+            if let Some(job) = self.current_job.as_ref() {
+                return status_label_color(job_status_label(job));
+            }
+        }
+        theme_muted()
     }
 
     fn current_config_section_len(&self) -> usize {
@@ -1493,10 +1588,7 @@ fn render_docker_preview_summary(preview: &DockerPreview) -> String {
         String::new(),
     ];
     for image in &preview.images {
-        lines.push(format!(
-            "- {} => {} -> {}",
-            image.name, image.reference, image.output_name
-        ));
+        lines.push(format!("- {} -> {}", image.name, image.output_name));
     }
     lines.join("\n")
 }
@@ -1568,10 +1660,21 @@ fn render_docker_preview_modal(preview: &DockerPreview) -> String {
     ];
 
     if !preview.images.is_empty() {
+        let image_name_width = preview
+            .images
+            .iter()
+            .map(|image| image.name.len())
+            .max()
+            .unwrap_or(0);
         lines.push(String::new());
         lines.push("Outputs:".to_string());
         for image in preview.images.iter().take(6) {
-            lines.push(format!("- {}", image.output_name));
+            lines.push(format!(
+                "- {:<width$}  {}",
+                image.name,
+                image.output_name,
+                width = image_name_width
+            ));
         }
         if preview.images.len() > 6 {
             lines.push(format!("- ...and {} more files", preview.images.len() - 6));
@@ -1643,6 +1746,115 @@ fn compact_job_status(job: &CurrentJob) -> String {
     } else {
         format!("[idle] {}", job.description)
     }
+}
+
+fn cursor_span(selected: bool) -> Span<'static> {
+    if selected {
+        Span::styled(
+            ">",
+            Style::default()
+                .fg(theme_accent())
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(" ", Style::default().fg(theme_muted()))
+    }
+}
+
+fn selection_span(selected: bool) -> Span<'static> {
+    if selected {
+        Span::styled(
+            "[x]",
+            Style::default()
+                .fg(theme_success())
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled("[ ]", Style::default().fg(theme_muted()))
+    }
+}
+
+fn status_badge_span(label: &'static str) -> Span<'static> {
+    Span::styled(
+        format!(" {} ", label),
+        Style::default()
+            .fg(Color::Black)
+            .bg(status_label_color(label))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn preview_kind_color(preview: &PreviewData) -> Color {
+    match preview {
+        PreviewData::Git(_) => theme_git(),
+        PreviewData::Helm(_) => theme_helm(),
+        PreviewData::Docker(_) => theme_docker(),
+    }
+}
+
+fn manifest_run_label(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Success => "OK",
+        RunStatus::Failed => "FAIL",
+    }
+}
+
+fn job_status_label(job: &CurrentJob) -> &'static str {
+    if job.running {
+        "RUN"
+    } else if job.failure.is_some() {
+        "FAIL"
+    } else if job.manifest.is_some() {
+        "DONE"
+    } else {
+        "IDLE"
+    }
+}
+
+fn status_label_color(label: &str) -> Color {
+    match label {
+        "RUN" => theme_warn(),
+        "DONE" | "OK" => theme_success(),
+        "FAIL" => theme_error(),
+        "IDLE" => theme_info(),
+        _ => theme_info(),
+    }
+}
+
+fn theme_accent() -> Color {
+    Color::Cyan
+}
+
+fn theme_info() -> Color {
+    Color::LightBlue
+}
+
+fn theme_success() -> Color {
+    Color::LightGreen
+}
+
+fn theme_warn() -> Color {
+    Color::Yellow
+}
+
+fn theme_error() -> Color {
+    Color::LightRed
+}
+
+fn theme_muted() -> Color {
+    Color::DarkGray
+}
+
+fn theme_git() -> Color {
+    Color::LightCyan
+}
+
+fn theme_helm() -> Color {
+    Color::LightBlue
+}
+
+fn theme_docker() -> Color {
+    Color::LightMagenta
 }
 
 fn render_git_repo_config_list(
