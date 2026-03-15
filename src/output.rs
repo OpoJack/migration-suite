@@ -1,4 +1,5 @@
 use std::{
+    env,
     fs::{self, File},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
@@ -26,7 +27,8 @@ pub fn timestamp_slug() -> String {
 }
 
 pub fn create_run_workspace(base_dir: &Path, kind: &str) -> Result<RunWorkspace> {
-    fs::create_dir_all(base_dir)?;
+    let base_dir = resolve_base_dir(base_dir)?;
+    fs::create_dir_all(&base_dir)?;
     let stamp = timestamp_slug();
     let run_id = format!("{kind}-{stamp}");
     let root_dir = base_dir.join(&run_id);
@@ -93,6 +95,7 @@ pub fn write_log(path: &Path, lines: &[String]) -> Result<()> {
 }
 
 pub fn load_recent_manifests(base_dir: &Path, limit: usize) -> Result<Vec<RunManifest>> {
+    let base_dir = resolve_base_dir(base_dir)?;
     if !base_dir.exists() {
         return Ok(Vec::new());
     }
@@ -114,6 +117,14 @@ pub fn load_recent_manifests(base_dir: &Path, limit: usize) -> Result<Vec<RunMan
     manifests.sort_by(|left, right| right.started_at.cmp(&left.started_at));
     manifests.truncate(limit);
     Ok(manifests)
+}
+
+fn resolve_base_dir(base_dir: &Path) -> Result<PathBuf> {
+    if base_dir.is_absolute() {
+        Ok(base_dir.to_path_buf())
+    } else {
+        Ok(env::current_dir()?.join(base_dir))
+    }
 }
 
 pub fn sanitize_filename(value: &str) -> String {
@@ -175,6 +186,18 @@ mod tests {
         let hash = sha256_file(&sample).expect("hash");
         assert_eq!(file_size(&sample).expect("size"), 5);
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn create_run_workspace_resolves_relative_base_dir_to_absolute_path() {
+        let workspace = create_run_workspace(Path::new("exports"), "git").expect("workspace");
+
+        assert!(workspace.root_dir.is_absolute());
+        assert!(
+            workspace
+                .root_dir
+                .ends_with(Path::new("exports").join(&workspace.run_id))
+        );
     }
 
     #[test]
