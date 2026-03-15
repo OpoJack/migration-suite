@@ -23,7 +23,7 @@ use crate::{
 pub enum TimeWindowPreset {
     Hours6,
     Day1,
-    Weeks1,
+    Weeks2,
     Months1,
     Months3,
 }
@@ -32,7 +32,7 @@ impl TimeWindowPreset {
     pub const ALL: [Self; 5] = [
         Self::Hours6,
         Self::Day1,
-        Self::Weeks1,
+        Self::Weeks2,
         Self::Months1,
         Self::Months3,
     ];
@@ -41,7 +41,7 @@ impl TimeWindowPreset {
         match self {
             Self::Hours6 => "6 hours",
             Self::Day1 => "1 day",
-            Self::Weeks1 => "1 week",
+            Self::Weeks2 => "2 weeks",
             Self::Months1 => "1 month",
             Self::Months3 => "3 months",
         }
@@ -51,7 +51,7 @@ impl TimeWindowPreset {
         match self {
             Self::Hours6 => "6 hours ago",
             Self::Day1 => "1 day ago",
-            Self::Weeks1 => "2 weeks ago",
+            Self::Weeks2 => "2 weeks ago",
             Self::Months1 => "1 month ago",
             Self::Months3 => "3 months ago",
         }
@@ -62,7 +62,7 @@ impl TimeWindowPreset {
         match self {
             Self::Hours6 => now - Duration::hours(6),
             Self::Day1 => now - Duration::days(1),
-            Self::Weeks1 => now - Duration::weeks(2),
+            Self::Weeks2 => now - Duration::weeks(2),
             Self::Months1 => now - Duration::days(30),
             Self::Months3 => now - Duration::days(90),
         }
@@ -162,6 +162,8 @@ pub async fn build_git_preview(
             });
             continue;
         }
+
+        sync_git_repo(runner, repo).await?;
 
         let branches_checked = repo.branches(&config.git.default_branches).to_vec();
         let mut changed_branches = Vec::new();
@@ -320,6 +322,19 @@ async fn run_git_export(
     let mut items = Vec::new();
 
     for repo in &preview.included {
+        let repo_config = config
+            .git
+            .repos
+            .iter()
+            .find(|entry| entry.name == repo.name && entry.path == repo.path)
+            .ok_or_else(|| eyre!("missing git config entry for {}", repo.name))?;
+        let remote = git_remote_name(repo_config);
+        log(
+            tx,
+            &mut log_lines,
+            format!("Refreshing {} from remote {}", repo.name, remote),
+        );
+        sync_git_repo(runner, repo_config).await?;
         log(
             tx,
             &mut log_lines,
@@ -336,9 +351,10 @@ async fn run_git_export(
         ];
 
         for branch in &repo.changed_branches {
-            args.push(branch.clone());
+            args.push(remote_branch_ref(repo_config, branch));
             if let Some(base_commit) =
-                latest_commit_before_window(runner, &repo.path, branch, preview.preset).await?
+                latest_commit_before_window(runner, &repo.path, remote, branch, preview.preset)
+                    .await?
             {
                 args.push(format!("^{base_commit}"));
             }
@@ -354,7 +370,8 @@ async fn run_git_export(
             item_type: "git_repo".to_string(),
             source: repo.path.display().to_string(),
             detail: format!(
-                "branches={} tags={}",
+                "remote={} branches={} tags={}",
+                remote,
                 repo.changed_branches.join(","),
                 repo.tags_in_window.join(",")
             ),
@@ -592,7 +609,7 @@ async fn branch_has_commits_in_window(
     let verify_args = vec![
         "rev-parse".to_string(),
         "--verify".to_string(),
-        branch.to_string(),
+        remote_branch_ref(repo, branch),
     ];
     let exists = runner.run("git", &verify_args, Some(&repo.path)).await?;
     if exists.status != 0 {
@@ -603,7 +620,7 @@ async fn branch_has_commits_in_window(
         "rev-list".to_string(),
         "--count".to_string(),
         format!("--since={}", preset.git_since_spec()),
-        branch.to_string(),
+        remote_branch_ref(repo, branch),
     ];
     let output = run_checked(runner, "git", &args, Some(&repo.path)).await?;
     Ok(output.stdout.trim().parse::<u64>().unwrap_or(0) > 0)
@@ -612,6 +629,7 @@ async fn branch_has_commits_in_window(
 async fn latest_commit_before_window(
     runner: &dyn CommandRunner,
     repo_path: &Path,
+    remote: &str,
     branch: &str,
     preset: TimeWindowPreset,
 ) -> Result<Option<String>> {
@@ -620,7 +638,7 @@ async fn latest_commit_before_window(
         "-n".to_string(),
         "1".to_string(),
         format!("--before={}", preset.git_since_spec()),
-        branch.to_string(),
+        remote_branch_ref_from_name(remote, branch),
     ];
     let output = run_checked(runner, "git", &args, Some(repo_path)).await?;
     let commit = output.stdout.trim();
@@ -659,6 +677,29 @@ async fn tags_in_window(
         }
     }
     Ok(tags)
+}
+
+async fn sync_git_repo(runner: &dyn CommandRunner, repo: &GitRepoConfig) -> Result<()> {
+    let args = vec![
+        "fetch".to_string(),
+        "--prune".to_string(),
+        "--tags".to_string(),
+        git_remote_name(repo).to_string(),
+    ];
+    run_checked(runner, "git", &args, Some(&repo.path)).await?;
+    Ok(())
+}
+
+fn git_remote_name(repo: &GitRepoConfig) -> &str {
+    repo.remote.as_deref().unwrap_or("origin")
+}
+
+fn remote_branch_ref(repo: &GitRepoConfig, branch: &str) -> String {
+    remote_branch_ref_from_name(git_remote_name(repo), branch)
+}
+
+fn remote_branch_ref_from_name(remote: &str, branch: &str) -> String {
+    format!("refs/remotes/{remote}/{branch}")
 }
 
 pub fn selected_git_repo_indices(config: &AppConfig, selected: &[bool]) -> Vec<usize> {
@@ -772,9 +813,22 @@ mod tests {
                 CommandKey::new(
                     "git",
                     &[
+                        "fetch".to_string(),
+                        "--prune".to_string(),
+                        "--tags".to_string(),
+                        "origin".to_string(),
+                    ],
+                    Some(&repo_path),
+                ),
+                CommandOutput::success(""),
+            ),
+            (
+                CommandKey::new(
+                    "git",
+                    &[
                         "rev-parse".to_string(),
                         "--verify".to_string(),
-                        "develop".to_string(),
+                        "refs/remotes/origin/develop".to_string(),
                     ],
                     Some(&repo_path),
                 ),
@@ -787,7 +841,7 @@ mod tests {
                         "rev-list".to_string(),
                         "--count".to_string(),
                         "--since=2 weeks ago".to_string(),
-                        "develop".to_string(),
+                        "refs/remotes/origin/develop".to_string(),
                     ],
                     Some(&repo_path),
                 ),
@@ -807,7 +861,7 @@ mod tests {
             ),
         ]);
 
-        let preview = build_git_preview(&config, &[0], TimeWindowPreset::Weeks1, &runner)
+        let preview = build_git_preview(&config, &[0], TimeWindowPreset::Weeks2, &runner)
             .await
             .expect("preview");
 
@@ -839,9 +893,22 @@ mod tests {
                 CommandKey::new(
                     "git",
                     &[
+                        "fetch".to_string(),
+                        "--prune".to_string(),
+                        "--tags".to_string(),
+                        "origin".to_string(),
+                    ],
+                    Some(&repo_path),
+                ),
+                CommandOutput::success(""),
+            ),
+            (
+                CommandKey::new(
+                    "git",
+                    &[
                         "rev-parse".to_string(),
                         "--verify".to_string(),
-                        "develop".to_string(),
+                        "refs/remotes/origin/develop".to_string(),
                     ],
                     Some(&repo_path),
                 ),
@@ -854,7 +921,7 @@ mod tests {
                         "rev-list".to_string(),
                         "--count".to_string(),
                         "--since=2 weeks ago".to_string(),
-                        "develop".to_string(),
+                        "refs/remotes/origin/develop".to_string(),
                     ],
                     Some(&repo_path),
                 ),
@@ -866,7 +933,7 @@ mod tests {
                     &[
                         "rev-parse".to_string(),
                         "--verify".to_string(),
-                        "release/abc".to_string(),
+                        "refs/remotes/origin/release/abc".to_string(),
                     ],
                     Some(&repo_path),
                 ),
@@ -879,7 +946,7 @@ mod tests {
                         "rev-list".to_string(),
                         "--count".to_string(),
                         "--since=2 weeks ago".to_string(),
-                        "release/abc".to_string(),
+                        "refs/remotes/origin/release/abc".to_string(),
                     ],
                     Some(&repo_path),
                 ),
@@ -899,7 +966,7 @@ mod tests {
             ),
         ]);
 
-        let preview = build_git_preview(&config, &[0], TimeWindowPreset::Weeks1, &runner)
+        let preview = build_git_preview(&config, &[0], TimeWindowPreset::Weeks2, &runner)
             .await
             .expect("preview");
 
@@ -930,9 +997,22 @@ mod tests {
                 CommandKey::new(
                     "git",
                     &[
+                        "fetch".to_string(),
+                        "--prune".to_string(),
+                        "--tags".to_string(),
+                        "origin".to_string(),
+                    ],
+                    Some(&repo_path),
+                ),
+                CommandOutput::success(""),
+            ),
+            (
+                CommandKey::new(
+                    "git",
+                    &[
                         "rev-parse".to_string(),
                         "--verify".to_string(),
-                        "develop".to_string(),
+                        "refs/remotes/origin/develop".to_string(),
                     ],
                     Some(&repo_path),
                 ),
@@ -945,7 +1025,7 @@ mod tests {
                         "rev-list".to_string(),
                         "--count".to_string(),
                         "--since=2 weeks ago".to_string(),
-                        "develop".to_string(),
+                        "refs/remotes/origin/develop".to_string(),
                     ],
                     Some(&repo_path),
                 ),
@@ -965,12 +1045,91 @@ mod tests {
             ),
         ]);
 
-        let preview = build_git_preview(&config, &[0], TimeWindowPreset::Weeks1, &runner)
+        let preview = build_git_preview(&config, &[0], TimeWindowPreset::Weeks2, &runner)
             .await
             .expect("preview");
 
         assert!(preview.included.is_empty());
         assert_eq!(preview.skipped[0].name, "noop");
+    }
+
+    #[tokio::test]
+    async fn git_preview_uses_configured_remote_name() {
+        let repo_path = PathBuf::from("/tmp/payments");
+        let config = AppConfig {
+            output: OutputConfig::default(),
+            git: GitConfig {
+                default_branches: vec!["develop".to_string()],
+                repos: vec![GitRepoConfig {
+                    name: "payments".to_string(),
+                    path: repo_path.clone(),
+                    remote: Some("company".to_string()),
+                    branches: None,
+                    enabled: true,
+                }],
+            },
+            helm: Default::default(),
+            docker: Default::default(),
+        };
+        let runner = MockCommandRunner::with_responses(vec![
+            (
+                CommandKey::new(
+                    "git",
+                    &[
+                        "fetch".to_string(),
+                        "--prune".to_string(),
+                        "--tags".to_string(),
+                        "company".to_string(),
+                    ],
+                    Some(&repo_path),
+                ),
+                CommandOutput::success(""),
+            ),
+            (
+                CommandKey::new(
+                    "git",
+                    &[
+                        "rev-parse".to_string(),
+                        "--verify".to_string(),
+                        "refs/remotes/company/develop".to_string(),
+                    ],
+                    Some(&repo_path),
+                ),
+                CommandOutput::success("abc123"),
+            ),
+            (
+                CommandKey::new(
+                    "git",
+                    &[
+                        "rev-list".to_string(),
+                        "--count".to_string(),
+                        "--since=2 weeks ago".to_string(),
+                        "refs/remotes/company/develop".to_string(),
+                    ],
+                    Some(&repo_path),
+                ),
+                CommandOutput::success("1"),
+            ),
+            (
+                CommandKey::new(
+                    "git",
+                    &[
+                        "for-each-ref".to_string(),
+                        "refs/tags".to_string(),
+                        "--format=%(refname:strip=2)\t%(creatordate:iso-strict)".to_string(),
+                    ],
+                    Some(&repo_path),
+                ),
+                CommandOutput::success(""),
+            ),
+        ]);
+
+        let preview = build_git_preview(&config, &[0], TimeWindowPreset::Weeks2, &runner)
+            .await
+            .expect("preview");
+
+        assert_eq!(preview.included.len(), 1);
+        assert_eq!(preview.included[0].changed_branches, vec!["develop"]);
     }
 
     #[test]

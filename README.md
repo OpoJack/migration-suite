@@ -11,6 +11,7 @@ The app is CLI-backed in v1. It expects working `git`, `helm`, and `docker` inst
 - Preview before export for Git, Helm, and Docker jobs
 - Timestamped run directories with manifests, logs, and SHA-256 checksums
 - Git export detection based on commits or tags in a preset time window
+- Git repos are refreshed from their configured remote before preview/export
 - Combined Git and Helm payloads, plus one Docker payload per selected image
 
 ## Configuration
@@ -34,6 +35,7 @@ enabled = true
 [[git.repos]]
 name = "user-api"
 path = "/Users/jack/work/user-api"
+remote = "origin"
 branches = ["develop", "release/abc"]
 enabled = true
 
@@ -103,6 +105,7 @@ Helm runs create a combined `helm-charts_<timestamp>.tar.gz.txt` payload. Docker
 
 ## Notes
 
+- `git.repos[].remote` controls which remote is fetched before Git preview/export. If omitted, the app uses `origin`.
 - Git LFS export is not implemented in v1 and is called out in the Git manifest notes.
 - Docker exports run sequentially by default.
 - Recent run history is loaded from manifest files on disk; there is no separate job database in v1.
