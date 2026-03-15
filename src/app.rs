@@ -590,7 +590,7 @@ impl App {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(8),
-                Constraint::Length(5),
+                Constraint::Length(6),
             ])
             .split(area);
         let summary_layout = Layout::default()
@@ -698,7 +698,7 @@ impl App {
     fn draw_helm_tab(&self, frame: &mut Frame, area: Rect) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(5)])
+            .constraints([Constraint::Min(8), Constraint::Length(6)])
             .split(area);
 
         let visible_rows = visible_list_rows(layout[0]);
@@ -780,7 +780,7 @@ impl App {
     fn draw_docker_tab(&self, frame: &mut Frame, area: Rect) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(5)])
+            .constraints([Constraint::Min(8), Constraint::Length(6)])
             .split(area);
 
         let visible_rows = visible_list_rows(layout[0]);
