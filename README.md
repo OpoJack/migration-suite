@@ -89,6 +89,7 @@ cargo run
 - `Space`: toggle the current repo/chart/image or config item
 - `p`: build a preview on the active packaging tab
 - `Enter`: start the previewed job from the modal
+- `e`: edit the selected Helm chart or Docker image from its tab
 
 Config tab:
 

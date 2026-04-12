@@ -13,8 +13,9 @@ use crate::{
     config::{AppConfig, DockerImageConfig, GitRepoConfig, HelmChartConfig},
     manifest::{ArtifactOutput, JobKind, LogEntry, ManifestItem, RunManifest, RunStatus},
     output::{
-        base64_encode_file, create_run_workspace, docker_output_name, file_size, git_output_name,
-        gzip_file, helm_output_name, load_recent_manifests, sanitize_filename, sha256_file,
+        base64_encode_file, create_run_workspace, docker_output_name, file_size,
+        finalize_run_workspace, git_output_name, gzip_file, helm_output_name,
+        load_recent_manifests, relocate_artifact_outputs, sanitize_filename, sha256_file,
         split_file, tar_gz_directory, write_log,
     },
 };
@@ -431,26 +432,33 @@ async fn run_git_export(
     let finished_at = Utc::now();
     match result {
         Ok(outputs) => {
-            write_log(&workspace.log_path, &log_lines)?;
+            let finalized_workspace = finalize_run_workspace(&workspace, RunStatus::Success)?;
+            let outputs = relocate_artifact_outputs(
+                &outputs,
+                &workspace.root_dir,
+                &finalized_workspace.root_dir,
+            );
+            write_log(&finalized_workspace.log_path, &log_lines)?;
             let manifest = RunManifest {
                 run_id: workspace.run_id,
                 kind: JobKind::Git,
                 status: RunStatus::Success,
                 started_at,
                 finished_at,
-                output_dir: workspace.root_dir.clone(),
+                output_dir: finalized_workspace.root_dir.clone(),
                 summary: format!("Exported {} git repos", items.len()),
                 notes: vec!["git_lfs_export_not_implemented".to_string()],
                 outputs,
                 items,
                 logs: logs_to_entries(&log_lines, finished_at),
             };
-            manifest.save(&workspace.manifest_path)?;
+            manifest.save(&finalized_workspace.manifest_path)?;
             Ok(manifest)
         }
         Err(error) => {
+            let finalized_workspace = finalize_run_workspace(&workspace, RunStatus::Failed)?;
             persist_failed_run(
-                &workspace,
+                &finalized_workspace,
                 JobKind::Git,
                 started_at,
                 finished_at,
@@ -523,26 +531,33 @@ async fn run_helm_export(
 
     match result {
         Ok(outputs) => {
-            write_log(&workspace.log_path, &log_lines)?;
+            let finalized_workspace = finalize_run_workspace(&workspace, RunStatus::Success)?;
+            let outputs = relocate_artifact_outputs(
+                &outputs,
+                &workspace.root_dir,
+                &finalized_workspace.root_dir,
+            );
+            write_log(&finalized_workspace.log_path, &log_lines)?;
             let manifest = RunManifest {
                 run_id: workspace.run_id,
                 kind: JobKind::Helm,
                 status: RunStatus::Success,
                 started_at,
                 finished_at,
-                output_dir: workspace.root_dir.clone(),
+                output_dir: finalized_workspace.root_dir.clone(),
                 summary: format!("Exported {} helm charts", items.len()),
                 notes: Vec::new(),
                 outputs,
                 items,
                 logs: logs_to_entries(&log_lines, finished_at),
             };
-            manifest.save(&workspace.manifest_path)?;
+            manifest.save(&finalized_workspace.manifest_path)?;
             Ok(manifest)
         }
         Err(error) => {
+            let finalized_workspace = finalize_run_workspace(&workspace, RunStatus::Failed)?;
             persist_failed_run(
-                &workspace,
+                &finalized_workspace,
                 JobKind::Helm,
                 started_at,
                 finished_at,
@@ -637,26 +652,33 @@ async fn run_docker_export(
 
     match result {
         Ok(()) => {
-            write_log(&workspace.log_path, &log_lines)?;
+            let finalized_workspace = finalize_run_workspace(&workspace, RunStatus::Success)?;
+            let outputs = relocate_artifact_outputs(
+                &outputs,
+                &workspace.root_dir,
+                &finalized_workspace.root_dir,
+            );
+            write_log(&finalized_workspace.log_path, &log_lines)?;
             let manifest = RunManifest {
                 run_id: workspace.run_id,
                 kind: JobKind::Docker,
                 status: RunStatus::Success,
                 started_at,
                 finished_at,
-                output_dir: workspace.root_dir.clone(),
+                output_dir: finalized_workspace.root_dir.clone(),
                 summary: format!("Exported {} docker images", items.len()),
                 notes: vec!["docker_exports_run_sequentially".to_string()],
                 outputs,
                 items,
                 logs: logs_to_entries(&log_lines, finished_at),
             };
-            manifest.save(&workspace.manifest_path)?;
+            manifest.save(&finalized_workspace.manifest_path)?;
             Ok(manifest)
         }
         Err(error) => {
+            let finalized_workspace = finalize_run_workspace(&workspace, RunStatus::Failed)?;
             persist_failed_run(
-                &workspace,
+                &finalized_workspace,
                 JobKind::Docker,
                 started_at,
                 finished_at,

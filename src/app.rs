@@ -5,7 +5,7 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyM
 use futures::StreamExt;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
@@ -257,6 +257,9 @@ impl App {
                 toggle_all(&mut self.helm_selected);
                 self.sync_helm_selection_state();
             }
+            KeyCode::Char('e') => {
+                self.form_modal = Some(self.helm_chart_form(self.helm_cursor)?);
+            }
             KeyCode::Char('p') | KeyCode::Char('r') => {
                 let preview = build_helm_preview(
                     &self.config,
@@ -289,6 +292,9 @@ impl App {
             KeyCode::Char('a') => {
                 toggle_all(&mut self.docker_selected);
                 self.sync_docker_selection_state();
+            }
+            KeyCode::Char('e') => {
+                self.form_modal = Some(self.docker_image_form(self.docker_cursor)?);
             }
             KeyCode::Char('p') | KeyCode::Char('r') => {
                 let preview = build_docker_preview(
@@ -475,6 +481,7 @@ impl App {
                 } else {
                     form.active = 0;
                 }
+                form.sync_cursor_to_active_field();
             }
             KeyCode::BackTab | KeyCode::Up => {
                 if form.active == 0 {
@@ -482,9 +489,16 @@ impl App {
                 } else {
                     form.active -= 1;
                 }
+                form.sync_cursor_to_active_field();
+            }
+            KeyCode::Left => {
+                form.move_cursor_left();
+            }
+            KeyCode::Right => {
+                form.move_cursor_right();
             }
             KeyCode::Backspace => {
-                form.current_value_mut().pop();
+                form.backspace();
             }
             KeyCode::Enter => {
                 let form = self.form_modal.take().expect("form should exist");
@@ -492,7 +506,7 @@ impl App {
             }
             KeyCode::Char(character) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                    form.current_value_mut().push(character);
+                    form.insert_char(character);
                 }
             }
             _ => {}
@@ -968,7 +982,7 @@ impl App {
         frame.render_widget(tabs, layout[0]);
 
         let body = match self.config_focus {
-            ConfigSection::Output => format!(
+            ConfigSection::Output => text_lines(&format!(
                 "Output directory: {}\nRecent run limit: {}\nSplit large transfers: {}\nMax transfer size (MB): {}\n\nPress `e` to edit and `s` to save.",
                 self.config.output.base_dir.display(),
                 self.config.output.recent_run_limit,
@@ -978,11 +992,11 @@ impl App {
                     "disabled"
                 },
                 self.config.output.max_transfer_size_mb
-            ),
-            ConfigSection::GitDefaults => format!(
+            )),
+            ConfigSection::GitDefaults => text_lines(&format!(
                 "Default branches: {}\n\nPress `e` to edit and `s` to save.",
                 self.config.git.default_branches.join(", ")
-            ),
+            )),
             ConfigSection::GitRepos => render_git_repo_config_list(
                 &self.config.git.repos,
                 self.config_cursor,
@@ -1057,15 +1071,24 @@ impl App {
     }
 
     fn draw_form_modal(&self, frame: &mut Frame, form: &FormModal) {
-        let area = centered_rect(70, 60, frame.area());
+        let area = form_modal_rect(form.fields.len(), frame.area());
         frame.render_widget(Clear, area);
+        let single_field = form.fields.len() == 1;
         let lines = form
             .fields
             .iter()
             .enumerate()
             .map(|(index, field)| {
-                let prefix = if index == form.active { "> " } else { "  " };
-                Line::from(format!("{prefix}{}: {}", field.label, field.value))
+                render_form_field_line(
+                    field,
+                    index == form.active,
+                    single_field,
+                    if index == form.active {
+                        Some(form.cursor)
+                    } else {
+                        None
+                    },
+                )
             })
             .collect::<Vec<_>>();
         frame.render_widget(
@@ -1077,6 +1100,9 @@ impl App {
             ),
             area,
         );
+        if let Some(cursor) = form.cursor_position(area) {
+            frame.set_cursor_position(cursor);
+        }
     }
 
     fn job_is_running(&self) -> bool {
@@ -1400,41 +1426,41 @@ impl App {
                 )
             }
             ConfigSection::HelmCharts => {
-                let chart = self
-                    .config
-                    .helm
-                    .charts
-                    .get(self.config_cursor)
-                    .ok_or_else(|| eyre!("no helm chart selected"))?;
-                FormModal::new(
-                    "Edit Helm Chart",
-                    FormKind::EditHelmChart(self.config_cursor),
-                    vec![
-                        ("Name", chart.name.clone()),
-                        ("Reference", chart.reference.clone()),
-                        ("Version", chart.version.clone()),
-                    ],
-                )
+                self.helm_chart_form(self.config_cursor)?
             }
             ConfigSection::DockerImages => {
-                let image = self
-                    .config
-                    .docker
-                    .images
-                    .get(self.config_cursor)
-                    .ok_or_else(|| eyre!("no docker image selected"))?;
-                FormModal::new(
-                    "Edit Docker Image",
-                    FormKind::EditDockerImage(self.config_cursor),
-                    vec![
-                        ("Name", image.name.clone()),
-                        ("Repository", image.repository.clone()),
-                        ("Tag", image.tag.clone()),
-                    ],
-                )
+                self.docker_image_form(self.config_cursor)?
             }
         });
         Ok(())
+    }
+
+    fn helm_chart_form(&self, index: usize) -> Result<FormModal> {
+        let chart = self
+            .config
+            .helm
+            .charts
+            .get(index)
+            .ok_or_else(|| eyre!("no helm chart selected"))?;
+        Ok(FormModal::new(
+            "Edit Helm Version",
+            FormKind::EditHelmChart(index),
+            vec![("Version", chart.version.clone())],
+        ))
+    }
+
+    fn docker_image_form(&self, index: usize) -> Result<FormModal> {
+        let image = self
+            .config
+            .docker
+            .images
+            .get(index)
+            .ok_or_else(|| eyre!("no docker image selected"))?;
+        Ok(FormModal::new(
+            "Edit Docker Tag",
+            FormKind::EditDockerImage(index),
+            vec![("Tag", image.tag.clone())],
+        ))
     }
 
     fn delete_current_config_item(&mut self) -> Result<()> {
@@ -1526,9 +1552,7 @@ impl App {
                     .charts
                     .get_mut(index)
                     .ok_or_else(|| eyre!("invalid helm chart index"))?;
-                chart.name = values[0].clone();
-                chart.reference = values[1].clone();
-                chart.version = values[2].clone();
+                chart.version = values[0].clone();
             }
             FormKind::AddDockerImage => {
                 self.config.docker.images.push(DockerImageConfig {
@@ -1546,14 +1570,13 @@ impl App {
                     .images
                     .get_mut(index)
                     .ok_or_else(|| eyre!("invalid docker image index"))?;
-                image.name = values[0].clone();
-                image.repository = values[1].clone();
-                image.tag = values[2].clone();
+                image.tag = values[0].clone();
             }
         }
         self.config.validate()?;
         self.config_dirty = true;
-        self.status_message = "Updated configuration in memory".to_string();
+        self.save_config_to_disk()?;
+        self.status_message = "Saved configuration changes".to_string();
         Ok(())
     }
 }
@@ -1729,26 +1752,74 @@ struct FormModal {
     kind: FormKind,
     fields: Vec<FormField>,
     active: usize,
+    cursor: usize,
 }
 
 impl FormModal {
     fn new(title: &str, kind: FormKind, fields: Vec<(&str, String)>) -> Self {
+        let fields = fields
+            .into_iter()
+            .map(|(label, value)| FormField {
+                label: label.to_string(),
+                value,
+            })
+            .collect::<Vec<_>>();
+        let cursor = fields
+            .first()
+            .map(|field| field.value.chars().count())
+            .unwrap_or(0);
         Self {
             title: title.to_string(),
             kind,
-            fields: fields
-                .into_iter()
-                .map(|(label, value)| FormField {
-                    label: label.to_string(),
-                    value,
-                })
-                .collect(),
+            fields,
             active: 0,
+            cursor,
         }
     }
 
     fn current_value_mut(&mut self) -> &mut String {
         &mut self.fields[self.active].value
+    }
+
+    fn current_value(&self) -> &str {
+        &self.fields[self.active].value
+    }
+
+    fn sync_cursor_to_active_field(&mut self) {
+        self.cursor = self.current_value().chars().count();
+    }
+
+    fn move_cursor_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    fn move_cursor_right(&mut self) {
+        let max = self.current_value().chars().count();
+        if self.cursor < max {
+            self.cursor += 1;
+        }
+    }
+
+    fn insert_char(&mut self, character: char) {
+        let cursor = self.cursor;
+        let value = self.current_value_mut();
+        let byte_index = char_to_byte_index(value, cursor);
+        value.insert(byte_index, character);
+        self.cursor += 1;
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+
+        let old_cursor = self.cursor;
+        let new_cursor = self.cursor - 1;
+        let value = self.current_value_mut();
+        let start = char_to_byte_index(value, new_cursor);
+        let end = char_to_byte_index(value, old_cursor);
+        value.replace_range(start..end, "");
+        self.cursor = new_cursor;
     }
 
     fn values(&self) -> Vec<String> {
@@ -1757,12 +1828,73 @@ impl FormModal {
             .map(|field| field.value.trim().to_string())
             .collect()
     }
+
+    fn cursor_position(&self, area: Rect) -> Option<Position> {
+        let field = self.fields.get(self.active)?;
+        let prefix_width = if self.fields.len() == 1 { 0 } else { 2 };
+        let label_width = field.label.chars().count() as u16 + 2;
+        let cursor_offset = self.cursor as u16;
+        Some(Position::new(
+            area.x + 1 + prefix_width + label_width + cursor_offset,
+            area.y + 1 + self.active as u16,
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
 struct FormField {
     label: String,
     value: String,
+}
+
+fn render_form_field_line(
+    field: &FormField,
+    active: bool,
+    single_field: bool,
+    cursor: Option<usize>,
+) -> Line<'static> {
+    let label = Span::styled(
+        format!("{}: ", field.label),
+        Style::default()
+            .fg(theme_info())
+            .add_modifier(Modifier::BOLD),
+    );
+
+    if active {
+        let prefix = if single_field {
+            Span::raw("")
+        } else {
+            Span::styled("> ", Style::default().fg(theme_accent()))
+        };
+        let _cursor = cursor.unwrap_or_else(|| field.value.chars().count());
+        let input = Span::styled(
+            field.value.clone(),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme_accent())
+                .add_modifier(Modifier::BOLD),
+        );
+        return Line::from(vec![prefix, label, input]);
+    }
+
+    let prefix = if single_field {
+        Span::raw("")
+    } else {
+        Span::raw("  ")
+    };
+    Line::from(vec![
+        prefix,
+        label,
+        Span::styled(field.value.clone(), Style::default().fg(Color::White)),
+    ])
+}
+
+fn char_to_byte_index(value: &str, char_index: usize) -> usize {
+    value
+        .char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len())
 }
 
 #[derive(Clone, Debug)]
@@ -1806,7 +1938,7 @@ fn git_controls_text() -> String {
 
 fn artifact_controls_text(noun: &str) -> String {
     format!(
-        "Press `space` to toggle the selected {noun}.\nPress `a` to toggle all {noun}.\nPress `p` to preview, then `Enter` in the modal to run."
+        "Press `space` to toggle the selected {noun}.\nPress `a` to toggle all {noun}.\nPress `e` to edit the selected item.\nPress `p` to preview, then `Enter` in the modal to run."
     )
 }
 
@@ -2102,59 +2234,83 @@ fn render_git_repo_config_list(
     repos: &[GitRepoConfig],
     cursor: usize,
     defaults: &[String],
-) -> String {
+) -> Vec<Line<'static>> {
     let mut lines = vec![
-        "Press `a` to add, `e` to edit, `d` to delete, `space` to toggle.".to_string(),
-        String::new(),
+        Line::from("Press `a` to add, `e` to edit, `d` to delete, `space` to toggle."),
+        Line::from(""),
     ];
     for (index, repo) in repos.iter().enumerate() {
-        let prefix = if index == cursor { "> " } else { "  " };
         let branches = repo.branches(defaults).join(", ");
-        lines.push(format!(
-            "{prefix}{} [{}] path={} branches={}",
+        lines.push(render_config_list_row(
+            format!(
+            "{} [{}] path={} branches={}",
             repo.name,
             if repo.enabled { "enabled" } else { "disabled" },
             repo.path.display(),
             branches
+        ),
+            index == cursor,
         ));
     }
-    lines.join("\n")
+    lines
 }
 
-fn render_helm_chart_config_list(charts: &[HelmChartConfig], cursor: usize) -> String {
+fn render_helm_chart_config_list(charts: &[HelmChartConfig], cursor: usize) -> Vec<Line<'static>> {
     let mut lines = vec![
-        "Press `a` to add, `e` to edit, `d` to delete, `space` to toggle.".to_string(),
-        String::new(),
+        Line::from("Press `a` to add, `e` to edit, `d` to delete, `space` to toggle."),
+        Line::from(""),
     ];
     for (index, chart) in charts.iter().enumerate() {
-        let prefix = if index == cursor { "> " } else { "  " };
-        lines.push(format!(
-            "{prefix}{} [{}] {} {}",
+        lines.push(render_config_list_row(
+            format!(
+            "{} [{}] {} {}",
             chart.name,
             if chart.enabled { "enabled" } else { "disabled" },
             chart.reference,
             chart.version
+        ),
+            index == cursor,
         ));
     }
-    lines.join("\n")
+    lines
 }
 
-fn render_docker_image_config_list(images: &[DockerImageConfig], cursor: usize) -> String {
+fn render_docker_image_config_list(images: &[DockerImageConfig], cursor: usize) -> Vec<Line<'static>> {
     let mut lines = vec![
-        "Press `a` to add, `e` to edit, `d` to delete, `space` to toggle.".to_string(),
-        String::new(),
+        Line::from("Press `a` to add, `e` to edit, `d` to delete, `space` to toggle."),
+        Line::from(""),
     ];
     for (index, image) in images.iter().enumerate() {
-        let prefix = if index == cursor { "> " } else { "  " };
-        lines.push(format!(
-            "{prefix}{} [{}] {}:{}",
+        lines.push(render_config_list_row(
+            format!(
+            "{} [{}] {}:{}",
             image.name,
             if image.enabled { "enabled" } else { "disabled" },
             image.repository,
             image.tag
+        ),
+            index == cursor,
         ));
     }
-    lines.join("\n")
+    lines
+}
+
+fn render_config_list_row(content: String, selected: bool) -> Line<'static> {
+    if selected {
+        Line::from(vec![Span::styled(
+            format!("  {content}"),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme_accent())
+                .add_modifier(Modifier::BOLD),
+        )])
+    } else {
+        Line::from(format!("  {content}"))
+    }
+}
+
+fn text_lines(text: &str) -> Vec<Line<'static>> {
+    text.lines().map(|line| Line::from(line.to_string())).collect()
 }
 
 fn optional_string(value: &str) -> Option<String> {
@@ -2200,6 +2356,21 @@ fn centered_rect(horizontal: u16, vertical: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - horizontal) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn form_modal_rect(field_count: usize, area: Rect) -> Rect {
+    let width = if field_count <= 1 { 55 } else { 70 };
+    let desired_height = (field_count as u16).saturating_add(4);
+    let bounded_height = desired_height.clamp(5, area.height.saturating_sub(2).max(5));
+    centered_rect(width, percentage_for_height(bounded_height, area.height), area)
+}
+
+fn percentage_for_height(target_height: u16, total_height: u16) -> u16 {
+    if total_height == 0 {
+        return 100;
+    }
+    let percent = ((u32::from(target_height) * 100) / u32::from(total_height)).max(1);
+    percent.min(100) as u16
 }
 
 fn visible_list_rows(area: Rect) -> usize {
@@ -2260,4 +2431,24 @@ mod tests {
         toggle_all(&mut values);
         assert_eq!(values, vec![false, false, false]);
     }
+
+    #[test]
+    fn form_modal_supports_mid_string_insertion_and_backspace() {
+        let mut form = FormModal::new(
+            "Edit Docker Tag",
+            FormKind::EditDockerImage(0),
+            vec![("Tag", "0.3.0".to_string())],
+        );
+
+        form.move_cursor_left();
+        form.move_cursor_left();
+        form.move_cursor_left();
+        form.insert_char('4');
+        assert_eq!(form.current_value(), "0.43.0");
+
+        form.backspace();
+        assert_eq!(form.current_value(), "0.3.0");
+        assert_eq!(form.cursor, 2);
+    }
+
 }
