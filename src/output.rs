@@ -313,9 +313,11 @@ mod tests {
 
         assert!(workspace.root_dir.is_absolute());
         assert!(
-            workspace
-                .root_dir
-                .ends_with(Path::new("exports").join(".in_progress").join(&workspace.run_id))
+            workspace.root_dir.ends_with(
+                Path::new("exports")
+                    .join(".in_progress")
+                    .join(&workspace.run_id)
+            )
         );
     }
 
@@ -324,16 +326,19 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let workspace = create_run_workspace(dir.path(), "git").expect("workspace");
         let success = finalize_run_workspace(&workspace, RunStatus::Success).expect("success");
-        assert!(success.root_dir.ends_with(
-            Path::new("success").join(&workspace.run_id)
-        ));
+        assert!(
+            success
+                .root_dir
+                .ends_with(Path::new("success").join(&workspace.run_id))
+        );
 
         let failed_workspace = create_run_workspace(dir.path(), "helm").expect("workspace");
-        let failed =
-            finalize_run_workspace(&failed_workspace, RunStatus::Failed).expect("failed");
-        assert!(failed.root_dir.ends_with(
-            Path::new("failed").join(format!("{}-failed", failed_workspace.run_id))
-        ));
+        let failed = finalize_run_workspace(&failed_workspace, RunStatus::Failed).expect("failed");
+        assert!(
+            failed
+                .root_dir
+                .ends_with(Path::new("failed").join(format!("{}-failed", failed_workspace.run_id)))
+        );
     }
 
     #[test]
@@ -400,8 +405,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let pending_root = dir.path().join(".in_progress");
         fs::create_dir_all(&pending_root).expect("pending root");
-        fs::create_dir_all(pending_root.join("git-2026-01-01_01-01-01"))
-            .expect("existing run dir");
+        fs::create_dir_all(pending_root.join("git-2026-01-01_01-01-01")).expect("existing run dir");
 
         let unique = unique_run_id(&pending_root, "git-2026-01-01_01-01-01");
         assert_eq!(unique, "git-2026-01-01_01-01-01-2");

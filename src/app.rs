@@ -1425,12 +1425,8 @@ impl App {
                     ],
                 )
             }
-            ConfigSection::HelmCharts => {
-                self.helm_chart_form(self.config_cursor)?
-            }
-            ConfigSection::DockerImages => {
-                self.docker_image_form(self.config_cursor)?
-            }
+            ConfigSection::HelmCharts => self.helm_chart_form(self.config_cursor)?,
+            ConfigSection::DockerImages => self.docker_image_form(self.config_cursor)?,
         });
         Ok(())
     }
@@ -2243,12 +2239,12 @@ fn render_git_repo_config_list(
         let branches = repo.branches(defaults).join(", ");
         lines.push(render_config_list_row(
             format!(
-            "{} [{}] path={} branches={}",
-            repo.name,
-            if repo.enabled { "enabled" } else { "disabled" },
-            repo.path.display(),
-            branches
-        ),
+                "{} [{}] path={} branches={}",
+                repo.name,
+                if repo.enabled { "enabled" } else { "disabled" },
+                repo.path.display(),
+                branches
+            ),
             index == cursor,
         ));
     }
@@ -2263,19 +2259,22 @@ fn render_helm_chart_config_list(charts: &[HelmChartConfig], cursor: usize) -> V
     for (index, chart) in charts.iter().enumerate() {
         lines.push(render_config_list_row(
             format!(
-            "{} [{}] {} {}",
-            chart.name,
-            if chart.enabled { "enabled" } else { "disabled" },
-            chart.reference,
-            chart.version
-        ),
+                "{} [{}] {} {}",
+                chart.name,
+                if chart.enabled { "enabled" } else { "disabled" },
+                chart.reference,
+                chart.version
+            ),
             index == cursor,
         ));
     }
     lines
 }
 
-fn render_docker_image_config_list(images: &[DockerImageConfig], cursor: usize) -> Vec<Line<'static>> {
+fn render_docker_image_config_list(
+    images: &[DockerImageConfig],
+    cursor: usize,
+) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from("Press `a` to add, `e` to edit, `d` to delete, `space` to toggle."),
         Line::from(""),
@@ -2283,12 +2282,12 @@ fn render_docker_image_config_list(images: &[DockerImageConfig], cursor: usize) 
     for (index, image) in images.iter().enumerate() {
         lines.push(render_config_list_row(
             format!(
-            "{} [{}] {}:{}",
-            image.name,
-            if image.enabled { "enabled" } else { "disabled" },
-            image.repository,
-            image.tag
-        ),
+                "{} [{}] {}:{}",
+                image.name,
+                if image.enabled { "enabled" } else { "disabled" },
+                image.repository,
+                image.tag
+            ),
             index == cursor,
         ));
     }
@@ -2310,7 +2309,9 @@ fn render_config_list_row(content: String, selected: bool) -> Line<'static> {
 }
 
 fn text_lines(text: &str) -> Vec<Line<'static>> {
-    text.lines().map(|line| Line::from(line.to_string())).collect()
+    text.lines()
+        .map(|line| Line::from(line.to_string()))
+        .collect()
 }
 
 fn optional_string(value: &str) -> Option<String> {
@@ -2362,7 +2363,11 @@ fn form_modal_rect(field_count: usize, area: Rect) -> Rect {
     let width = if field_count <= 1 { 55 } else { 70 };
     let desired_height = (field_count as u16).saturating_add(4);
     let bounded_height = desired_height.clamp(5, area.height.saturating_sub(2).max(5));
-    centered_rect(width, percentage_for_height(bounded_height, area.height), area)
+    centered_rect(
+        width,
+        percentage_for_height(bounded_height, area.height),
+        area,
+    )
 }
 
 fn percentage_for_height(target_height: u16, total_height: u16) -> u16 {
@@ -2450,5 +2455,4 @@ mod tests {
         assert_eq!(form.current_value(), "0.3.0");
         assert_eq!(form.cursor, 2);
     }
-
 }
